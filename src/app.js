@@ -1,5 +1,5 @@
 import { DEFAULT_DRAW_REVEAL_SECONDS, getPlayerClientState } from "./game.js?v=20260426c";
-import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260426c";
+import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260426e";
 import { DEFAULT_RULESET, getRuleset, getTileType, sortTileIds } from "./rules.js?v=20260425i";
 import { getTileSvgMarkup } from "./tile-art.js?v=20260425z";
 

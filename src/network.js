@@ -253,7 +253,7 @@ export class NetworkController {
       }
 
       if (isRoomExpired(meta)) {
-        throw new Error("?輸?摰? 8 ?餌絞??蝯?嚗?蝔?Ｙ???);
+        throw new Error("這個房間已超過 8 天沒有活動，請重新建立房間。");
       }
 
       const browserSeat = getSeatForBrowser(meta, identity.browserId);
@@ -397,7 +397,7 @@ export class NetworkController {
     const roomSnapshot = await get(dbRef(`rooms/${roomId}`));
     const roomData = normalizeRoom(roomSnapshot.val(), nextMeta);
     if (!roomData) {
-      throw new Error("?輸?鞈?撠撱箇?摰?嚗?蝔??岫??);
+      throw new Error("房間資料尚未建立完成，請稍後再試。");
     }
 
     const previousPlayer =
