@@ -13,7 +13,7 @@
       content="可部署到 GitHub Pages 的雙人 13 張麻將 Web UI，支援 iPad 連線對戰與 Firebase 房間同步。"
     />
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./styles.css?v=20260426c" />
+    <link rel="stylesheet" href="./styles.css?v=20260426d" />
     <script>
       (function () {
         var root =
@@ -199,7 +199,7 @@
       })();
     </script>
     <script type="module">
-      const version = "20260426c";
+      const version = "20260426d";
 
       function shouldLoadLocalOverride() {
         const { protocol, hostname } = window.location;
@@ -219,15 +219,17 @@
         return Boolean(private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31);
       }
 
-      if (shouldLoadLocalOverride()) {
-        try {
-          await import(`./local-admin/firebase-config.local.js?v=${version}`);
-        } catch (error) {
-          console.info("Local Firebase override not loaded:", error && error.message ? error.message : error);
+      (async function bootstrapApp() {
+        if (shouldLoadLocalOverride()) {
+          try {
+            await import(`./local-admin/firebase-config.local.js?v=${version}`);
+          } catch (error) {
+            console.info("Local Firebase override not loaded:", error && error.message ? error.message : error);
+          }
         }
-      }
 
-      await import(`./src/app.js?v=${version}`);
+        await import(`./src/app.js?v=${version}`);
+      })();
     </script>
   </body>
 </html>
