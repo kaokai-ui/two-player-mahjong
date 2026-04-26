@@ -13,7 +13,7 @@
       content="可部署到 GitHub Pages 的雙人 13 張麻將 Web UI，支援 iPad 連線對戰與 Firebase 房間同步。"
     />
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./styles.css?v=20260426a" />
+    <link rel="stylesheet" href="./styles.css?v=20260426b" />
     <script>
       (function () {
         var root =
@@ -115,6 +115,18 @@
               </label>
 
               <button class="primary-button" type="button" data-submit-action="create-room">建立房間</button>
+              <label class="field">
+                <span>摸牌倒數</span>
+                <select id="create-draw-reveal-seconds-select">
+                  <option value="0">不倒數</option>
+                  <option value="1">1 秒</option>
+                  <option value="2">2 秒</option>
+                  <option value="3" selected>3 秒</option>
+                  <option value="4">4 秒</option>
+                  <option value="5">5 秒</option>
+                  <option value="6">6 秒</option>
+                </select>
+              </label>
               <div id="create-room-feedback" class="form-feedback" aria-live="polite"></div>
             </form>
 
@@ -187,7 +199,7 @@
       })();
     </script>
     <script type="module">
-      const version = "20260426a";
+      const version = "20260426b";
 
       function shouldLoadLocalOverride() {
         const { protocol, hostname } = window.location;

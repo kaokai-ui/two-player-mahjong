@@ -15,7 +15,13 @@ import {
   ReCaptchaV3Provider,
   initializeAppCheck,
 } from "https://www.gstatic.com/firebasejs/12.7.0/firebase-app-check.js";
-import { applyGameCommand, createStartedGame, createWaitingGame, normalizeGameState } from "./game.js?v=20260425i";
+import {
+  DEFAULT_DRAW_REVEAL_SECONDS,
+  applyGameCommand,
+  createStartedGame,
+  createWaitingGame,
+  normalizeGameState,
+} from "./game.js?v=20260426b";
 import { DEFAULT_RULESET } from "./rules.js?v=20260425i";
 import {
   firebaseAppCheckConfig,
@@ -129,7 +135,12 @@ export class NetworkController {
     return trimmed;
   }
 
-  async createRoom({ roomId, playerName, rulesetId = DEFAULT_RULESET }) {
+  async createRoom({
+    roomId,
+    playerName,
+    rulesetId = DEFAULT_RULESET,
+    drawRevealSeconds = DEFAULT_DRAW_REVEAL_SECONDS,
+  }) {
     try {
       await this.ensureReady();
 
@@ -200,7 +211,7 @@ export class NetworkController {
             joinedAt: now,
           },
         },
-        game: createWaitingGame(rulesetId),
+        game: createWaitingGame(rulesetId, { drawRevealSeconds }),
         commands: {},
       };
 

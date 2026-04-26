@@ -13,6 +13,10 @@ import {
   sortTileIds,
 } from "./rules.js?v=20260425i";
 
+export const DEFAULT_DRAW_REVEAL_SECONDS = 3;
+const MIN_DRAW_REVEAL_SECONDS = 0;
+const MAX_DRAW_REVEAL_SECONDS = 6;
+
 function createRoundPlayer(seat) {
   return {
     seat,
@@ -48,6 +52,7 @@ export function normalizeGameState(game) {
   return {
     ...game,
     players: normalizedPlayers,
+    drawRevealSeconds: normalizeDrawRevealSeconds(game.drawRevealSeconds),
     actionLog: Array.isArray(game.actionLog) ? game.actionLog : [],
     wall: Array.isArray(game.wall) ? game.wall : [],
     pendingClaim: game.pendingClaim || null,
@@ -58,13 +63,26 @@ export function normalizeGameState(game) {
   };
 }
 
-export function createWaitingGame(rulesetId) {
+export function normalizeDrawRevealSeconds(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_DRAW_REVEAL_SECONDS;
+  }
+
+  return Math.min(MAX_DRAW_REVEAL_SECONDS, Math.max(MIN_DRAW_REVEAL_SECONDS, Math.round(parsed)));
+}
+
+export function createWaitingGame(rulesetId, options = {}) {
   const ruleset = getRuleset(rulesetId);
+  const drawRevealSeconds = normalizeDrawRevealSeconds(
+    typeof options === "number" ? options : options && options.drawRevealSeconds,
+  );
   return {
     status: "waiting",
     phase: "waiting",
     rulesetId: ruleset.id,
     rulesetName: ruleset.name,
+    drawRevealSeconds,
     players: [createRoundPlayer(0), createRoundPlayer(1)],
     actionLog: [`已建立房間，規則為「${ruleset.name}」。`],
     latestDiscard: null,
@@ -82,10 +100,15 @@ export function createWaitingGame(rulesetId) {
   };
 }
 
-export function createStartedGame(rulesetId, previousGame) {
+export function createStartedGame(rulesetId, previousGame, options = {}) {
   const ruleset = getRuleset(rulesetId);
   const deck = buildDeck(ruleset.id);
   const players = [createRoundPlayer(0), createRoundPlayer(1)];
+  const drawRevealSeconds = normalizeDrawRevealSeconds(
+    options && Object.prototype.hasOwnProperty.call(options, "drawRevealSeconds")
+      ? options.drawRevealSeconds
+      : previousGame && previousGame.drawRevealSeconds,
+  );
 
   for (let drawCount = 0; drawCount < 13; drawCount += 1) {
     players[0].hand.push(deck.shift());
@@ -105,6 +128,7 @@ export function createStartedGame(rulesetId, previousGame) {
     phase: "discard",
     rulesetId: ruleset.id,
     rulesetName: ruleset.name,
+    drawRevealSeconds,
     players,
     actionLog: [`新的一局開始，${seatLabel(dealerSeat)}為莊家。`],
     latestDiscard: null,

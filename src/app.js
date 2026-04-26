@@ -1,5 +1,5 @@
-import { getPlayerClientState } from "./game.js?v=20260425i";
-import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260426a";
+import { DEFAULT_DRAW_REVEAL_SECONDS, getPlayerClientState } from "./game.js?v=20260426b";
+import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260426b";
 import { DEFAULT_RULESET, getRuleset, getTileType, sortTileIds } from "./rules.js?v=20260425i";
 import { getTileSvgMarkup } from "./tile-art.js?v=20260425z";
 
@@ -12,6 +12,7 @@ const elements = {
   createRoomCodeInput: document.querySelector("#create-room-code-input"),
   joinRoomCodeInput: document.querySelector("#join-room-code-input"),
   createRulesetSelect: document.querySelector("#create-ruleset-select"),
+  createDrawRevealSecondsSelect: document.querySelector("#create-draw-reveal-seconds-select"),
   createRoomButton: document.querySelector('[data-submit-action="create-room"]'),
   joinRoomButton: document.querySelector('[data-submit-action="join-room"]'),
   createRoomFeedback: document.querySelector("#create-room-feedback"),
@@ -89,6 +90,7 @@ if (queryRoom) {
 }
 
 elements.createRoomCodeInput.value = createRandomRoomId();
+moveCreateRevealFieldAboveButton();
 
 elements.createRoomForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -197,6 +199,19 @@ if (bootWarning) {
   bootWarning.remove();
 }
 
+function moveCreateRevealFieldAboveButton() {
+  if (!elements.createRoomForm || !elements.createDrawRevealSecondsSelect || !elements.createRoomButton) {
+    return;
+  }
+
+  const revealField = elements.createDrawRevealSecondsSelect.closest(".field");
+  if (!revealField || revealField.nextElementSibling === elements.createRoomButton) {
+    return;
+  }
+
+  elements.createRoomForm.insertBefore(revealField, elements.createRoomButton);
+}
+
 async function handleCreateRoomSubmit() {
   appState.error = "";
   appState.lastLobbyAction = "create";
@@ -206,6 +221,7 @@ async function handleCreateRoomSubmit() {
       roomId: elements.createRoomCodeInput.value,
       playerName: elements.playerNameInput.value,
       rulesetId: elements.createRulesetSelect.value || DEFAULT_RULESET,
+      drawRevealSeconds: readCreateDrawRevealSeconds(),
     });
     appState.message = "已建立房間。";
     appState.lastLobbyAction = "";
@@ -859,6 +875,7 @@ function triggerAutoDrawIfNeeded(game, playerSeat, clientState) {
 function getDrawRevealState(game, playerSeat, playerRoundState) {
   const lastDraw = game && game.lastDraw ? game.lastDraw : null;
   const hand = playerRoundState && Array.isArray(playerRoundState.hand) ? playerRoundState.hand : [];
+  const drawRevealSeconds = normalizeDrawRevealSecondsValue(game && game.drawRevealSeconds);
 
   if (
     !lastDraw ||
@@ -866,7 +883,8 @@ function getDrawRevealState(game, playerSeat, playerRoundState) {
     lastDraw.seat !== playerSeat ||
     !hand.includes(lastDraw.tileId) ||
     !game ||
-    game.phase !== "discard"
+    game.phase !== "discard" ||
+    drawRevealSeconds <= 0
   ) {
     clearDrawRevealState();
     return null;
@@ -882,7 +900,7 @@ function getDrawRevealState(game, playerSeat, playerRoundState) {
 
   if (appState.drawRevealKey !== key) {
     appState.drawRevealKey = key;
-    appState.drawRevealEndsAt = now + 3000;
+    appState.drawRevealEndsAt = now + drawRevealSeconds * 1000;
   }
 
   const remainingMs = appState.drawRevealEndsAt - now;
@@ -917,6 +935,26 @@ function scheduleCountdownRender(delay) {
     appState.countdownTimer = 0;
     render();
   }, delay);
+}
+
+function readCreateDrawRevealSeconds() {
+  return normalizeDrawRevealSecondsValue(
+    elements.createDrawRevealSecondsSelect ? elements.createDrawRevealSecondsSelect.value : DEFAULT_DRAW_REVEAL_SECONDS,
+  );
+}
+
+function normalizeDrawRevealSecondsValue(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return DEFAULT_DRAW_REVEAL_SECONDS;
+  }
+
+  return Math.min(6, Math.max(0, Math.round(parsed)));
+}
+
+function formatDrawRevealSetting(value) {
+  const seconds = normalizeDrawRevealSecondsValue(value);
+  return seconds <= 0 ? "不倒數" : `${seconds} 秒`;
 }
 
 function formatSeat(seat) {
