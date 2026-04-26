@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d3028" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>雙人 13 張麻將</title>
+    <meta
+      name="description"
+      content="可部署到 GitHub Pages 的雙人 13 張麻將 Web UI，支援 iPad 連線對戰與 Firebase 房間同步。"
+    />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./styles.css?v=20260426a" />
+    <script>
+      (function () {
+        var root =
+          typeof globalThis !== "undefined"
+            ? globalThis
+            : typeof self !== "undefined"
+              ? self
+              : typeof window !== "undefined"
+                ? window
+                : {};
+        var cryptoApi = root.crypto;
+
+        if (!cryptoApi || typeof cryptoApi.randomUUID === "function" || typeof cryptoApi.getRandomValues !== "function") {
+          return;
+        }
+
+        cryptoApi.randomUUID = function () {
+          var bytes = new Uint8Array(16);
+          cryptoApi.getRandomValues(bytes);
+          bytes[6] = (bytes[6] & 15) | 64;
+          bytes[8] = (bytes[8] & 63) | 128;
+
+          var hex = "";
+          for (var index = 0; index < bytes.length; index += 1) {
+            var value = bytes[index].toString(16);
+            hex += value.length < 2 ? "0" + value : value;
+          }
+
+          return (
+            hex.slice(0, 8) +
+            "-" +
+            hex.slice(8, 12) +
+            "-" +
+            hex.slice(12, 16) +
+            "-" +
+            hex.slice(16, 20) +
+            "-" +
+            hex.slice(20)
+          );
+        };
+      })();
+    </script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <div id="boot-warning" class="banner banner-error" hidden>
+        <span id="boot-warning-text">
+          頁面腳本尚未成功啟動，請重新整理 Safari；若仍無法操作，請回報這行訊息仍有顯示。
+        </span>
+      </div>
+
+      <header class="hero">
+        <div class="hero-copy">
+          <span class="eyebrow">Two-Player Mahjong</span>
+          <h1>雙人 13 張麻將</h1>
+          <p>
+            支援雙人對局、建立房間、加入房間與 iPad 連線遊玩，資料同步使用 Firebase Realtime Database，
+            可直接部署到 GitHub Pages。
+          </p>
+        </div>
+        <div class="hero-card">
+          <label class="field">
+            <span>玩家名稱</span>
+            <input id="player-name-input" type="text" maxlength="16" placeholder="請輸入你的名字" />
+          </label>
+          <div id="firebase-status"></div>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section id="notice-banner"></section>
+
+        <section class="panel lobby-panel">
+          <div class="panel-head">
+            <div>
+              <h2>建立或加入房間</h2>
+              <p>建立新房後，把房號分享給另一位玩家；雙方都加入後就可以開始對局。</p>
+            </div>
+          </div>
+
+          <div class="lobby-grid">
+            <form id="create-room-form" class="lobby-card">
+              <h3>建立房間</h3>
+
+              <label class="field">
+                <span>房號</span>
+                <div class="inline-field">
+                  <input id="create-room-code-input" type="text" maxlength="8" placeholder="輸入或產生房號" />
+                  <button type="button" class="ghost-button" data-room-action="new-room-code">重新產生</button>
+                </div>
+              </label>
+
+              <label class="field">
+                <span>規則</span>
+                <select id="create-ruleset-select">
+                  <option value="full136">雙人全牌 136 張</option>
+                  <option value="classic64">雙人經典 64 張</option>
+                </select>
+              </label>
+
+              <button class="primary-button" type="button" data-submit-action="create-room">建立房間</button>
+              <div id="create-room-feedback" class="form-feedback" aria-live="polite"></div>
+            </form>
+
+            <form id="join-room-form" class="lobby-card">
+              <h3>加入房間</h3>
+
+              <label class="field">
+                <span>房號</span>
+                <input id="join-room-code-input" type="text" maxlength="8" placeholder="請輸入房號" />
+              </label>
+
+              <button class="primary-button" type="button" data-submit-action="join-room">加入房間</button>
+              <div id="join-room-feedback" class="form-feedback" aria-live="polite"></div>
+            </form>
+          </div>
+        </section>
+
+        <section id="room-panel" class="panel"></section>
+        <section id="game-panel" class="panel"></section>
+      </main>
+    </div>
+
+    <script>
+      (function () {
+        var warning = document.getElementById("boot-warning");
+        var warningText = document.getElementById("boot-warning-text");
+
+        function showBootWarning(message) {
+          if (warningText && message) {
+            warningText.textContent = message;
+          }
+          if (warning) {
+            warning.hidden = false;
+          }
+        }
+
+        window.addEventListener("error", function (event) {
+          if (document.documentElement.dataset.appReady === "yes") {
+            return;
+          }
+
+          var errorMessage =
+            (event.error && event.error.message) ||
+            event.message ||
+            "未知錯誤";
+          showBootWarning("頁面腳本啟動失敗：" + errorMessage);
+        });
+
+        window.addEventListener("unhandledrejection", function (event) {
+          if (document.documentElement.dataset.appReady === "yes") {
+            return;
+          }
+
+          var reason = event.reason;
+          var errorMessage =
+            (reason && reason.message) ||
+            (typeof reason === "string" ? reason : "未知錯誤");
+          showBootWarning("頁面腳本啟動失敗：" + errorMessage);
+        });
+
+        /*
+        window.setTimeout(function () {
+          if (document.documentElement.dataset.appReady === "yes") {
+            return;
+          }
+
+          showBootWarning("頁面腳本尚未成功啟動，請重新整理 Safari；若仍無法操作，請回報這行訊息仍有顯示。");
+        }, 1800);
+        */
+      })();
+    </script>
+    <script type="module">
+      const version = "20260426a";
+
+      function shouldLoadLocalOverride() {
+        const { protocol, hostname } = window.location;
+        if (protocol === "file:") {
+          return true;
+        }
+
+        if (hostname === "localhost" || hostname === "127.0.0.1" || hostname.endsWith(".local")) {
+          return true;
+        }
+
+        if (/^10\./.test(hostname) || /^192\.168\./.test(hostname)) {
+          return true;
+        }
+
+        const private172 = hostname.match(/^172\.(\d{1,2})\./);
+        return Boolean(private172 && Number(private172[1]) >= 16 && Number(private172[1]) <= 31);
+      }
+
+      if (shouldLoadLocalOverride()) {
+        try {
+          await import(`./local-admin/firebase-config.local.js?v=${version}`);
+        } catch (error) {
+          console.info("Local Firebase override not loaded:", error && error.message ? error.message : error);
+        }
+      }
+
+      await import(`./src/app.js?v=${version}`);
+    </script>
+  </body>
+</html>
