@@ -21,7 +21,7 @@ import {
   createStartedGame,
   createWaitingGame,
   normalizeGameState,
-} from "./game.js?v=20260426b";
+} from "./game.js?v=20260426c";
 import { DEFAULT_RULESET } from "./rules.js?v=20260425i";
 import {
   firebaseAppCheckConfig,
@@ -30,7 +30,9 @@ import {
   isFirebaseConfigured,
 } from "./firebase-config.js?v=20260426a";
 
+const BROWSER_ID_KEY = "mahjong-browser-id";
 const PLAYER_NAME_KEY = "mahjong-player-name";
+const ROOM_EXPIRATION_MS = 8 * 24 * 60 * 60 * 1000;
 const COMMAND_TYPES = new Set([
   "startGame",
   "restartGame",
@@ -82,9 +84,12 @@ export class NetworkController {
     this.roomId = "";
     this.room = null;
     this.roomSnapshot = "";
+    this.roomData = null;
+    this.roomMeta = null;
     this.commandChain = Promise.resolve();
     this.processingCommand = false;
     this.roomUnsubscribe = null;
+    this.roomMetaUnsubscribe = null;
   }
 
   async init() {
@@ -117,6 +122,7 @@ export class NetworkController {
   getIdentity() {
     return {
       playerId: firebaseSetupState.uid || "",
+      browserId: getOrCreateBrowserId(),
       playerName: readStorage(PLAYER_NAME_KEY) || "",
     };
   }
@@ -151,12 +157,12 @@ export class NetworkController {
       }
 
       const identity = this.getIdentity();
-      if (!identity.playerId) {
+      if (!identity.playerId || !identity.browserId) {
         throw new Error("匿名登入尚未完成，請稍候再試。");
       }
 
       const existingMeta = normalizeRoomMeta((await get(dbRef(`roomMeta/${normalizedRoomId}`))).val());
-      if (existingMeta) {
+      if (existingMeta && !isRoomExpired(existingMeta)) {
         throw new Error("這個房號已存在，請換一個房號。");
       }
 
@@ -164,6 +170,7 @@ export class NetworkController {
       const createdMeta = {
         roomId: normalizedRoomId,
         hostPlayerId: identity.playerId,
+        hostBrowserId: identity.browserId,
         rulesetId,
         createdAt: now,
         updatedAt: now,
@@ -174,6 +181,9 @@ export class NetworkController {
         },
         seats: {
           0: identity.playerId,
+        },
+        seatBrowserIds: {
+          0: identity.browserId,
         },
       };
 
@@ -233,22 +243,30 @@ export class NetworkController {
       }
 
       const identity = this.getIdentity();
-      if (!identity.playerId) {
+      if (!identity.playerId || !identity.browserId) {
         throw new Error("匿名登入尚未完成，請稍候再試。");
       }
 
-      const metaRef = dbRef(`roomMeta/${normalizedRoomId}`);
-      let meta = normalizeRoomMeta((await get(metaRef)).val());
+      let meta = normalizeRoomMeta((await get(dbRef(`roomMeta/${normalizedRoomId}`))).val());
       if (!meta) {
         throw new Error("找不到這個房間。");
       }
 
+      if (isRoomExpired(meta)) {
+        throw new Error("?輸?摰? 8 ?餌絞??蝯?嚗?蝔?Ｙ???);
+      }
+
+      const browserSeat = getSeatForBrowser(meta, identity.browserId);
+      if (browserSeat != null) {
+        await this.reclaimSeat(normalizedRoomId, meta, browserSeat, trimmedName, identity);
+        return;
+      }
+
       if (!isParticipant(meta, identity.playerId)) {
-        if (!meta.open || meta.seats[1]) {
+        if (!meta.open || seatExists(meta, 1)) {
           throw new Error("房間已滿。");
         }
 
-        let joinError = "";
         const now = Date.now();
         const joinedMeta = {
           ...meta,
@@ -263,10 +281,14 @@ export class NetworkController {
             ...meta.seats,
             1: identity.playerId,
           },
+          seatBrowserIds: {
+            ...meta.seatBrowserIds,
+            1: identity.browserId,
+          },
         };
         meta = joinedMeta;
-        await setWithContext(`roomMeta/${normalizedRoomId}`, meta); /*
-          metaRef,
+        await setWithContext(`roomMeta/${normalizedRoomId}`, meta);
+        /* metaRef,
           (current) => {
             const currentMeta = normalizeRoomMeta(current);
             if (!currentMeta) {
@@ -312,7 +334,7 @@ export class NetworkController {
       }
 
       const roomSnapshot = await get(dbRef(`rooms/${normalizedRoomId}`));
-      const roomData = normalizeRoom(roomSnapshot.val());
+      const roomData = normalizeRoom(roomSnapshot.val(), meta);
       if (!roomData) {
         throw new Error("房間資料尚未建立完成，請稍後再試。");
       }
@@ -333,6 +355,64 @@ export class NetworkController {
     } catch (error) {
       throw new Error(formatFirebaseClientError(error));
     }
+  }
+
+  async reclaimSeat(roomId, meta, seat, playerName, identity) {
+    const previousPlayerId = getSeatValue(meta, seat);
+    const now = Date.now();
+    const nextParticipants = {
+      ...(meta.participants || {}),
+      [identity.playerId]: true,
+    };
+
+    if (previousPlayerId && previousPlayerId !== identity.playerId) {
+      delete nextParticipants[previousPlayerId];
+    }
+
+    const nextSeats = {
+      ...(meta.seats || {}),
+      [seat]: identity.playerId,
+    };
+    const occupiedSeatCount = countOccupiedSeats(nextSeats);
+    const nextMeta = {
+      ...meta,
+      hostPlayerId: seat === 0 ? identity.playerId : meta.hostPlayerId,
+      updatedAt: now,
+      playerCount: occupiedSeatCount,
+      open: occupiedSeatCount < 2,
+      participants: nextParticipants,
+      seats: nextSeats,
+      seatBrowserIds: {
+        ...(meta.seatBrowserIds || {}),
+        [seat]: identity.browserId,
+      },
+    };
+
+    await setWithContext(`roomMeta/${roomId}`, nextMeta);
+
+    if (seat === 0) {
+      await setWithContext(`rooms/${roomId}/hostPlayerId`, identity.playerId);
+    }
+
+    const roomSnapshot = await get(dbRef(`rooms/${roomId}`));
+    const roomData = normalizeRoom(roomSnapshot.val(), nextMeta);
+    if (!roomData) {
+      throw new Error("?輸?鞈?撠撱箇?摰?嚗?蝔??岫??);
+    }
+
+    const previousPlayer =
+      previousPlayerId && roomData.players ? roomData.players[previousPlayerId] : null;
+    const joinedAt =
+      previousPlayer && typeof previousPlayer.joinedAt === "number" ? previousPlayer.joinedAt : now;
+
+    await setWithContext(`rooms/${roomId}/players/${identity.playerId}`, {
+      id: identity.playerId,
+      name: playerName,
+      seat,
+      joinedAt,
+    });
+    await setWithContext(`rooms/${roomId}/updatedAt`, now);
+    this.subscribeToRoom(roomId);
   }
 
   async sendGameCommand(type, payload = {}) {
@@ -377,10 +457,16 @@ export class NetworkController {
       this.roomUnsubscribe();
       this.roomUnsubscribe = null;
     }
+    if (typeof this.roomMetaUnsubscribe === "function") {
+      this.roomMetaUnsubscribe();
+      this.roomMetaUnsubscribe = null;
+    }
 
     this.roomId = "";
     this.room = null;
     this.roomSnapshot = "";
+    this.roomData = null;
+    this.roomMeta = null;
     this.processingCommand = false;
     this.onRoomChange(null);
   }
@@ -394,26 +480,41 @@ export class NetworkController {
     this.leaveRoom();
     this.roomId = roomId;
 
+    this.roomMetaUnsubscribe = onValue(
+      dbRef(`roomMeta/${roomId}`),
+      (snapshot) => {
+        this.roomMeta = normalizeRoomMeta(snapshot.val());
+        this.emitCombinedRoom();
+      },
+      (error) => {
+        this.onError(formatFirebaseClientError(error));
+      },
+    );
+
     this.roomUnsubscribe = onValue(
       dbRef(`rooms/${roomId}`),
       (snapshot) => {
-        const nextRoom = normalizeRoom(snapshot.val());
-        const nextSnapshot = JSON.stringify(nextRoom);
-        const changed = nextSnapshot !== this.roomSnapshot;
-
-        this.room = nextRoom;
-        this.roomSnapshot = nextSnapshot;
-
-        if (changed) {
-          this.onRoomChange(this.room);
-        }
-
+        this.roomData = snapshot.val();
+        this.emitCombinedRoom();
         this.queuePendingCommand();
       },
       (error) => {
         this.onError(formatFirebaseClientError(error));
       },
     );
+  }
+
+  emitCombinedRoom() {
+    const nextRoom = normalizeRoom(this.roomData, this.roomMeta);
+    const nextSnapshot = JSON.stringify(nextRoom);
+    const changed = nextSnapshot !== this.roomSnapshot;
+
+    this.room = nextRoom;
+    this.roomSnapshot = nextSnapshot;
+
+    if (changed) {
+      this.onRoomChange(this.room);
+    }
   }
 
   queuePendingCommand() {
@@ -461,8 +562,8 @@ export class NetworkController {
       return;
     }
 
-    const players = this.room.players || {};
-    const player = players[command.fromPlayerId];
+    const players = getActivePlayers(this.room);
+    const player = players.find((item) => item && item.id === command.fromPlayerId);
     if (!player) {
       if (key) {
         await remove(dbRef(`rooms/${this.roomId}/commands/${key}`));
@@ -475,7 +576,7 @@ export class NetworkController {
 
     try {
       if (command.type === "startGame") {
-        if (Object.keys(players).length < 2) {
+        if (players.length < 2) {
           errorMessage = "兩位玩家都加入房間後才能開始對局。";
         } else if (this.room.game && this.room.game.status === "playing") {
           return;
@@ -795,13 +896,7 @@ function dbRef(path) {
 }
 
 async function writeInitialRoomRecord(roomId, roomData) {
-  await setWithContext(`rooms/${roomId}/roomId`, roomData.roomId);
-  await setWithContext(`rooms/${roomId}/hostPlayerId`, roomData.hostPlayerId);
-  await setWithContext(`rooms/${roomId}/rulesetId`, roomData.rulesetId);
-  await setWithContext(`rooms/${roomId}/createdAt`, roomData.createdAt);
-  await setWithContext(`rooms/${roomId}/updatedAt`, roomData.updatedAt);
-  await setWithContext(`rooms/${roomId}/players/${roomData.hostPlayerId}`, roomData.players[roomData.hostPlayerId]);
-  await setWithContext(`rooms/${roomId}/game`, roomData.game);
+  await setWithContext(`rooms/${roomId}`, roomData);
 }
 
 async function writeHostGameState(roomId, { game, rulesetId, updatedAt, lastError }) {
@@ -825,14 +920,22 @@ async function setWithContext(path, value) {
   }
 }
 
-function normalizeRoom(room) {
+function normalizeRoom(room, meta = null) {
   if (!room) {
     return null;
   }
 
+  const normalizedMeta = normalizeRoomMeta(meta);
+  const normalizedPlayers = room.players || {};
+
   return {
     ...room,
-    players: room.players || {},
+    roomId: room.roomId || (normalizedMeta && normalizedMeta.roomId) || "",
+    hostPlayerId: room.hostPlayerId || (normalizedMeta && normalizedMeta.hostPlayerId) || "",
+    rulesetId: room.rulesetId || (normalizedMeta && normalizedMeta.rulesetId) || DEFAULT_RULESET,
+    meta: normalizedMeta,
+    players: normalizedPlayers,
+    activePlayers: buildActivePlayers(normalizedPlayers, normalizedMeta),
     commands: room.commands || {},
     game: normalizeGameState(room.game),
   };
@@ -846,6 +949,7 @@ function normalizeRoomMeta(meta) {
   return {
     roomId: meta.roomId || "",
     hostPlayerId: meta.hostPlayerId || "",
+    hostBrowserId: meta.hostBrowserId || "",
     rulesetId: meta.rulesetId || DEFAULT_RULESET,
     createdAt: typeof meta.createdAt === "number" ? meta.createdAt : 0,
     updatedAt: typeof meta.updatedAt === "number" ? meta.updatedAt : 0,
@@ -853,7 +957,52 @@ function normalizeRoomMeta(meta) {
     open: Boolean(meta.open),
     participants: meta.participants || {},
     seats: meta.seats || {},
+    seatBrowserIds: meta.seatBrowserIds || {},
   };
+}
+
+function buildActivePlayers(players, meta) {
+  const normalizedPlayers = players || {};
+  if (!meta || !meta.seats) {
+    return Object.values(normalizedPlayers).sort((left, right) => left.seat - right.seat);
+  }
+
+  return [0, 1]
+    .map((seat) => {
+      const playerId = getSeatValue(meta, seat);
+      if (!playerId) {
+        return null;
+      }
+
+      const player = normalizedPlayers[playerId];
+      if (player) {
+        return {
+          ...player,
+          id: player.id || playerId,
+          seat,
+        };
+      }
+
+      return {
+        id: playerId,
+        name: "",
+        seat,
+        joinedAt: 0,
+      };
+    })
+    .filter(Boolean);
+}
+
+function getActivePlayers(room) {
+  if (!room) {
+    return [];
+  }
+
+  if (Array.isArray(room.activePlayers) && room.activePlayers.length) {
+    return room.activePlayers;
+  }
+
+  return buildActivePlayers(room.players || {}, room.meta || null);
 }
 
 function isParticipant(meta, playerId) {
@@ -872,6 +1021,44 @@ function getSeatForPlayer(meta, playerId) {
     return 1;
   }
   return null;
+}
+
+function getSeatForBrowser(meta, browserId) {
+  if (!meta || !meta.seatBrowserIds || !browserId) {
+    return null;
+  }
+
+  if (meta.seatBrowserIds[0] === browserId || meta.seatBrowserIds["0"] === browserId) {
+    return 0;
+  }
+  if (meta.seatBrowserIds[1] === browserId || meta.seatBrowserIds["1"] === browserId) {
+    return 1;
+  }
+  return null;
+}
+
+function seatExists(meta, seat) {
+  return Boolean(getSeatValue(meta, seat));
+}
+
+function getSeatValue(meta, seat) {
+  if (!meta || !meta.seats) {
+    return "";
+  }
+
+  return meta.seats[seat] || meta.seats[String(seat)] || "";
+}
+
+function countOccupiedSeats(seats) {
+  return [0, 1].reduce((count, seat) => count + (seats && (seats[seat] || seats[String(seat)]) ? 1 : 0), 0);
+}
+
+function isRoomExpired(meta, now = Date.now()) {
+  if (!meta || typeof meta.updatedAt !== "number" || meta.updatedAt <= 0) {
+    return false;
+  }
+
+  return now - meta.updatedAt > ROOM_EXPIRATION_MS;
 }
 
 function getCommandRulesetId(command, fallbackRulesetId) {
@@ -909,6 +1096,20 @@ function stripUndefined(value) {
   }
 
   return value;
+}
+
+function getOrCreateBrowserId() {
+  const existing = readStorage(BROWSER_ID_KEY);
+  if (existing) {
+    return existing;
+  }
+
+  const generated =
+    typeof crypto !== "undefined" && crypto && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `browser-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  writeStorage(BROWSER_ID_KEY, generated);
+  return generated;
 }
 
 function readStorage(key) {

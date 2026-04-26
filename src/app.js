@@ -1,5 +1,5 @@
-import { DEFAULT_DRAW_REVEAL_SECONDS, getPlayerClientState } from "./game.js?v=20260426b";
-import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260426b";
+import { DEFAULT_DRAW_REVEAL_SECONDS, getPlayerClientState } from "./game.js?v=20260426c";
+import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260426c";
 import { DEFAULT_RULESET, getRuleset, getTileType, sortTileIds } from "./rules.js?v=20260425i";
 import { getTileSvgMarkup } from "./tile-art.js?v=20260425z";
 
@@ -830,6 +830,9 @@ function readCommandPayload(element) {
 }
 
 function getPlayers(room) {
+  if (room && Array.isArray(room.activePlayers) && room.activePlayers.length) {
+    return room.activePlayers;
+  }
   return Object.values(room.players || {}).sort((left, right) => left.seat - right.seat);
 }
 
