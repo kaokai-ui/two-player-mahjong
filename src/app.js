@@ -1,7 +1,7 @@
 import { DEFAULT_DRAW_REVEAL_SECONDS, getPlayerClientState } from "./game.js?v=20260427g";
 import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260427g";
 import { DEFAULT_RULESET, getRuleset, getTileType, sortTileIds } from "./rules.js?v=20260425i";
-import { DEFAULT_SOLO_DIFFICULTY, SOLO_DIFFICULTY_LABELS, SoloController, normalizeSoloDifficulty } from "./solo-controller.js?v=20260427j";
+import { DEFAULT_SOLO_DIFFICULTY, SOLO_DIFFICULTY_LABELS, SoloController, normalizeSoloDifficulty } from "./solo-controller.js?v=20260427l";
 import { getTileSvgMarkup } from "./tile-art.js?v=20260425z";
 
 const elements = {

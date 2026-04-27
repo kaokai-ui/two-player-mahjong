@@ -6,6 +6,7 @@ import {
   getTileRank,
   getTileSuit,
   getTileType,
+  getTilesByType,
   isHonorTile,
   isSuitTile,
 } from "./rules.js?v=20260425i";
@@ -15,6 +16,7 @@ export const SOLO_DIFFICULTY_LABELS = {
   easy: "簡單",
   normal: "普通",
   hard: "困難",
+  god: "賭神",
 };
 
 const ALL_TILE_TYPES = [
@@ -30,12 +32,79 @@ const ALL_TILE_TYPES = [
   "B",
 ];
 
+const DEFAULT_LOOKAHEAD_CANDIDATE_LIMIT = 1;
+const DEFAULT_LOOKAHEAD_DRAW_LIMIT = 2;
+
+const DIFFICULTY_PROFILES = {
+  easy: {
+    id: "easy",
+    structured: false,
+    advanced: false,
+    lookahead: false,
+    actionThreshold: 0,
+    attackFactor: 1,
+    riskMultiplier: 1,
+    lookaheadWeight: 0,
+    lookaheadCandidateLimit: 0,
+    lookaheadDrawLimit: 0,
+    lookaheadActivationGap: 0,
+    lookaheadMaxShanten: 0,
+    guaranteedLookaheadShanten: 0,
+  },
+  normal: {
+    id: "normal",
+    structured: true,
+    advanced: false,
+    lookahead: false,
+    actionThreshold: 0,
+    attackFactor: 1,
+    riskMultiplier: 1,
+    lookaheadWeight: 0,
+    lookaheadCandidateLimit: 0,
+    lookaheadDrawLimit: 0,
+    lookaheadActivationGap: 0,
+    lookaheadMaxShanten: 0,
+    guaranteedLookaheadShanten: 0,
+  },
+  hard: {
+    id: "hard",
+    structured: false,
+    advanced: true,
+    lookahead: false,
+    actionThreshold: 14,
+    attackFactor: 1,
+    riskMultiplier: 1,
+    lookaheadWeight: 0,
+    lookaheadCandidateLimit: 0,
+    lookaheadDrawLimit: 0,
+    lookaheadActivationGap: 0,
+    lookaheadMaxShanten: 0,
+    guaranteedLookaheadShanten: 0,
+  },
+  god: {
+    id: "god",
+    structured: false,
+    advanced: true,
+    lookahead: true,
+    actionThreshold: 6,
+    attackFactor: 1.1,
+    riskMultiplier: 0.74,
+    lookaheadWeight: 1.75,
+    lookaheadCandidateLimit: 2,
+    lookaheadDrawLimit: 3,
+    lookaheadActivationGap: 14,
+    lookaheadMaxShanten: 4,
+    guaranteedLookaheadShanten: 2,
+  },
+};
+
 export function normalizeSoloDifficulty(value) {
   return Object.prototype.hasOwnProperty.call(SOLO_DIFFICULTY_LABELS, value) ? value : DEFAULT_SOLO_DIFFICULTY;
 }
 
 export function decideBotAction(game, playerSeat, difficulty = DEFAULT_SOLO_DIFFICULTY) {
   const normalizedDifficulty = normalizeSoloDifficulty(difficulty);
+  const profile = getDifficultyProfile(normalizedDifficulty);
   const clientState = getPlayerClientState(game, playerSeat);
   const player = game && Array.isArray(game.players) ? game.players[playerSeat] : null;
 
@@ -60,31 +129,36 @@ export function decideBotAction(game, playerSeat, difficulty = DEFAULT_SOLO_DIFF
     };
   }
 
-  const claimDecision = decideClaimAction(game, playerSeat, clientState, normalizedDifficulty);
+  const claimDecision = decideClaimAction(game, playerSeat, clientState, profile);
   if (claimDecision) {
     return claimDecision;
   }
 
-  const kongDecision = decideKongAction(game, playerSeat, player, clientState, normalizedDifficulty);
+  const kongDecision = decideKongAction(game, playerSeat, player, clientState, profile);
   if (kongDecision) {
     return kongDecision;
   }
 
   if (clientState.canDiscard) {
-    const tileId = chooseDiscardTile(game, playerSeat, player, normalizedDifficulty);
+    const discardDecision = chooseDiscardDecision(game, playerSeat, player, profile);
     return {
       type: "discardTile",
-      payload: { tileId },
+      payload: { tileId: discardDecision.tileId },
       delayMs: getBotDelay(),
       infoMessage: "電腦思考出牌中...",
-      resultMessage: `電腦打出 ${getTileLabel(tileId)}。`,
+      resultMessage: `電腦打出 ${getTileLabel(discardDecision.tileId)}。`,
+      debugSummary: discardDecision.debugSummary,
     };
   }
 
   return null;
 }
 
-function decideClaimAction(game, playerSeat, clientState, difficulty) {
+function getDifficultyProfile(difficulty) {
+  return DIFFICULTY_PROFILES[difficulty] || DIFFICULTY_PROFILES[DEFAULT_SOLO_DIFFICULTY];
+}
+
+function decideClaimAction(game, playerSeat, clientState, profile) {
   const options = Array.isArray(clientState.claimOptions) ? clientState.claimOptions : [];
   const pendingClaim = clientState.pendingClaim || null;
   if (!options.length || !pendingClaim) {
@@ -101,19 +175,51 @@ function decideClaimAction(game, playerSeat, clientState, difficulty) {
     };
   }
 
-  if (difficulty === "hard") {
-    return decideProbabilisticClaimAction(game, playerSeat, clientState, options, pendingClaim);
+  if (profile.advanced) {
+    return decideAdvancedClaimAction(game, playerSeat, clientState, options, pendingClaim, profile);
   }
 
-  if (difficulty === "normal") {
+  if (profile.structured) {
     return decideStructuredClaimAction(game, playerSeat, clientState, options, pendingClaim);
   }
 
+  return decideEasyClaimAction(game, playerSeat, options, pendingClaim);
+}
+
+function decideKongAction(game, playerSeat, player, clientState, profile) {
+  if (profile.advanced) {
+    return decideAdvancedKongAction(game, playerSeat, player, clientState, profile);
+  }
+
+  if (profile.structured) {
+    return decideStructuredKongAction(player, clientState);
+  }
+
+  return decideEasyKongAction(player, clientState, profile.id);
+}
+
+function chooseDiscardDecision(game, playerSeat, player, profile) {
+  if (profile.advanced) {
+    return chooseAdvancedDiscardDecision(game, playerSeat, player, profile);
+  }
+
+  if (profile.structured) {
+    return chooseStructuredDiscardDecision(player);
+  }
+
+  const tileId = chooseSimpleDiscardTile(Array.isArray(player && player.hand) ? [...player.hand] : []);
+  return {
+    tileId,
+    debugSummary: `簡單模式：優先丟孤張、字牌與邊張，選擇 ${getTileLabel(tileId)}。`,
+  };
+}
+
+function decideEasyClaimAction(game, playerSeat, options, pendingClaim) {
   const tileType = getTileType(pendingClaim.tileId || pendingClaim.tileType || "");
   const handCounts = countTileTypes(game.players[playerSeat].hand || []);
 
   const kongOption = options.find((option) => option.type === "claimDiscardKong");
-  if (kongOption && shouldTakeSet(tileType, handCounts, difficulty, true)) {
+  if (kongOption && shouldTakeSet(tileType, handCounts, DEFAULT_SOLO_DIFFICULTY, true)) {
     return {
       type: "claimDiscardKong",
       delayMs: getBotDelay(),
@@ -123,7 +229,7 @@ function decideClaimAction(game, playerSeat, clientState, difficulty) {
   }
 
   const pungOption = options.find((option) => option.type === "claimPung");
-  if (pungOption && shouldTakeSet(tileType, handCounts, difficulty, false)) {
+  if (pungOption && shouldTakeSet(tileType, handCounts, DEFAULT_SOLO_DIFFICULTY, false)) {
     return {
       type: "claimPung",
       delayMs: getBotDelay(),
@@ -150,211 +256,6 @@ function decideClaimAction(game, playerSeat, clientState, difficulty) {
     infoMessage: "電腦正在考慮是否過牌...",
     resultMessage: "電腦選擇過牌。",
   };
-}
-
-function decideKongAction(game, playerSeat, player, clientState, difficulty) {
-  if (difficulty === "hard") {
-    return decideProbabilisticKongAction(game, playerSeat, player, clientState);
-  }
-
-  if (difficulty === "normal") {
-    return decideStructuredKongAction(player, clientState);
-  }
-
-  const concealedKong = (clientState.concealedKongs || []).find((tileType) =>
-    shouldDeclareOwnKong(tileType, player.hand || [], difficulty),
-  );
-  if (concealedKong) {
-    return {
-      type: "concealedKong",
-      payload: { tileType: concealedKong },
-      delayMs: getBotDelay(),
-      infoMessage: "電腦正在考慮是否暗槓...",
-      resultMessage: `電腦暗槓 ${getTileLabel(concealedKong)}。`,
-    };
-  }
-
-  const addedKong = (clientState.addedKongs || []).find((option) =>
-    shouldDeclareOwnKong(option.tileType, player.hand || [], difficulty),
-  );
-  if (addedKong) {
-    return {
-      type: "addedKong",
-      payload: {
-        meldId: addedKong.meldId,
-        tileId: addedKong.tileId,
-      },
-      delayMs: getBotDelay(),
-      infoMessage: "電腦正在考慮是否補槓...",
-      resultMessage: `電腦補槓 ${getTileLabel(addedKong.tileType)}。`,
-    };
-  }
-
-  return null;
-}
-
-function decideProbabilisticClaimAction(game, playerSeat, clientState, options, pendingClaim) {
-  const player = game && Array.isArray(game.players) ? game.players[playerSeat] : null;
-  if (!player) {
-    return null;
-  }
-
-  const analysisCache = createAnalysisCache();
-  const baseline = evaluateProbabilisticHand(
-    game,
-    playerSeat,
-    player.hand || [],
-    Array.isArray(player.melds) ? player.melds.length : 0,
-    [],
-    analysisCache,
-  );
-  const candidates = [];
-  const claimTileId = pendingClaim.tileId || pendingClaim.tileType || "";
-  const claimTileType = getTileType(claimTileId);
-
-  const kongOption = options.find((option) => option.type === "claimDiscardKong");
-  if (kongOption) {
-    const usedTileIds = getTilesOfTypeFromHand(player.hand || [], claimTileType, 3);
-    if (usedTileIds.length === 3) {
-      candidates.push(
-        createProbabilisticActionCandidate({
-          game,
-          playerSeat,
-          remainingHand: removeTileIdsFromHand(player.hand || [], usedTileIds),
-          lockedMeldsAfter: (player.melds || []).length + 1,
-          baseline,
-          option: kongOption,
-          infoMessage: "電腦正在考慮是否槓牌...",
-          resultMessage: `電腦槓了 ${getTileLabel(claimTileType)}。`,
-          actionBonus: 32,
-          extraVisibleTileTypes: usedTileIds.map((tileId) => getTileType(tileId)),
-          analysisCache,
-        }),
-      );
-    }
-  }
-
-  const pungOption = options.find((option) => option.type === "claimPung");
-  if (pungOption) {
-    const usedTileIds = getTilesOfTypeFromHand(player.hand || [], claimTileType, 2);
-    if (usedTileIds.length === 2) {
-      candidates.push(
-        createProbabilisticActionCandidate({
-          game,
-          playerSeat,
-          remainingHand: removeTileIdsFromHand(player.hand || [], usedTileIds),
-          lockedMeldsAfter: (player.melds || []).length + 1,
-          baseline,
-          option: pungOption,
-          infoMessage: "電腦正在考慮是否碰牌...",
-          resultMessage: `電腦碰了 ${getTileLabel(claimTileType)}。`,
-          actionBonus: isHonorTile(claimTileType) ? 18 : 10,
-          extraVisibleTileTypes: usedTileIds.map((tileId) => getTileType(tileId)),
-          analysisCache,
-        }),
-      );
-    }
-  }
-
-  for (const chowOption of options.filter((option) => option.type === "claimChow")) {
-    const usedTileIds = getTilesForNeededTypes(player.hand || [], chowOption.neededTypes || []);
-    if (usedTileIds.length === 2) {
-      candidates.push(
-        createProbabilisticActionCandidate({
-          game,
-          playerSeat,
-          remainingHand: removeTileIdsFromHand(player.hand || [], usedTileIds),
-          lockedMeldsAfter: (player.melds || []).length + 1,
-          baseline,
-          option: chowOption,
-          infoMessage: "電腦正在考慮是否吃牌...",
-          resultMessage: `電腦吃了 ${chowOption.label.replace(/^吃\s*/, "")}。`,
-          actionBonus: 8,
-          extraVisibleTileTypes: usedTileIds.map((tileId) => getTileType(tileId)),
-          analysisCache,
-        }),
-      );
-    }
-  }
-
-  const bestCandidate = pickBestActionCandidate(candidates);
-  if (bestCandidate && shouldTakeProbabilisticAction(baseline, bestCandidate.progress, bestCandidate.actionValue)) {
-    return {
-      type: bestCandidate.option.type,
-      payload: bestCandidate.option.neededTypes ? { neededTypes: bestCandidate.option.neededTypes } : undefined,
-      delayMs: getBotDelay(),
-      infoMessage: bestCandidate.infoMessage,
-      resultMessage: bestCandidate.resultMessage,
-    };
-  }
-
-  return {
-    type: "passClaim",
-    delayMs: getBotDelay(600, 1100),
-    infoMessage: "電腦正在考慮是否過牌...",
-    resultMessage: "電腦選擇過牌。",
-  };
-}
-
-function decideProbabilisticKongAction(game, playerSeat, player, clientState) {
-  const handTileIds = player.hand || [];
-  const lockedMelds = Array.isArray(player.melds) ? player.melds.length : 0;
-  const analysisCache = createAnalysisCache();
-  const baseline = evaluateProbabilisticHand(game, playerSeat, handTileIds, lockedMelds, [], analysisCache);
-
-  for (const tileType of clientState.concealedKongs || []) {
-    const usedTileIds = getTilesOfTypeFromHand(handTileIds, tileType, 4);
-    if (usedTileIds.length !== 4) {
-      continue;
-    }
-
-    const remainingHand = removeTileIdsFromHand(handTileIds, usedTileIds);
-    const progress = evaluateProbabilisticHand(
-      game,
-      playerSeat,
-      remainingHand,
-      lockedMelds + 1,
-      usedTileIds.map((tileId) => getTileType(tileId)),
-      analysisCache,
-    );
-    const actionValue = scoreProbabilisticOutcome(baseline, progress, 26);
-    if (shouldTakeProbabilisticAction(baseline, progress, actionValue)) {
-      return {
-        type: "concealedKong",
-        payload: { tileType },
-        delayMs: getBotDelay(),
-        infoMessage: "電腦正在考慮是否暗槓...",
-        resultMessage: `電腦暗槓 ${getTileLabel(tileType)}。`,
-      };
-    }
-  }
-
-  for (const option of clientState.addedKongs || []) {
-    const remainingHand = removeTileIdsFromHand(handTileIds, [option.tileId]);
-    const progress = evaluateProbabilisticHand(
-      game,
-      playerSeat,
-      remainingHand,
-      lockedMelds,
-      [option.tileType],
-      analysisCache,
-    );
-    const actionValue = scoreProbabilisticOutcome(baseline, progress, 20);
-    if (shouldTakeProbabilisticAction(baseline, progress, actionValue)) {
-      return {
-        type: "addedKong",
-        payload: {
-          meldId: option.meldId,
-          tileId: option.tileId,
-        },
-        delayMs: getBotDelay(),
-        infoMessage: "電腦正在考慮是否補槓...",
-        resultMessage: `電腦補槓 ${getTileLabel(option.tileType)}。`,
-      };
-    }
-  }
-
-  return null;
 }
 
 function decideStructuredClaimAction(game, playerSeat, clientState, options, pendingClaim) {
@@ -443,6 +344,156 @@ function decideStructuredClaimAction(game, playerSeat, clientState, options, pen
   };
 }
 
+function decideAdvancedClaimAction(game, playerSeat, clientState, options, pendingClaim, profile) {
+  const player = game && Array.isArray(game.players) ? game.players[playerSeat] : null;
+  if (!player) {
+    return null;
+  }
+
+  const analysisCache = createAnalysisCache();
+  const lockedMelds = Array.isArray(player.melds) ? player.melds.length : 0;
+  const baseline = evaluateAdvancedHand(game, playerSeat, player.hand || [], lockedMelds, [], analysisCache);
+  const battleProfile = deriveBattleProfile(game, playerSeat, baseline);
+  const claimTileId = pendingClaim.tileId || pendingClaim.tileType || "";
+  const claimTileType = getTileType(claimTileId);
+  const candidates = [];
+
+  const kongOption = options.find((option) => option.type === "claimDiscardKong");
+  if (kongOption) {
+    const usedTileIds = getTilesOfTypeFromHand(player.hand || [], claimTileType, 3);
+    if (usedTileIds.length === 3) {
+      candidates.push(
+        createAdvancedActionCandidate({
+          game,
+          playerSeat,
+          baseline,
+          battleProfile,
+          remainingHand: removeTileIdsFromHand(player.hand || [], usedTileIds),
+          lockedMeldsAfter: lockedMelds + 1,
+          option: kongOption,
+          infoMessage: "電腦正在評估是否槓牌...",
+          resultMessage: `電腦槓了 ${getTileLabel(claimTileType)}。`,
+          actionBonus: 36,
+          extraVisibleTileTypes: usedTileIds.map((tileId) => getTileType(tileId)),
+          analysisCache,
+          profile,
+          actionName: "槓牌",
+          exposureDelta: 1,
+        }),
+      );
+    }
+  }
+
+  const pungOption = options.find((option) => option.type === "claimPung");
+  if (pungOption) {
+    const usedTileIds = getTilesOfTypeFromHand(player.hand || [], claimTileType, 2);
+    if (usedTileIds.length === 2) {
+      candidates.push(
+        createAdvancedActionCandidate({
+          game,
+          playerSeat,
+          baseline,
+          battleProfile,
+          remainingHand: removeTileIdsFromHand(player.hand || [], usedTileIds),
+          lockedMeldsAfter: lockedMelds + 1,
+          option: pungOption,
+          infoMessage: "電腦正在評估是否碰牌...",
+          resultMessage: `電腦碰了 ${getTileLabel(claimTileType)}。`,
+          actionBonus: isHonorTile(claimTileType) ? 20 : 12,
+          extraVisibleTileTypes: usedTileIds.map((tileId) => getTileType(tileId)),
+          analysisCache,
+          profile,
+          actionName: "碰牌",
+          exposureDelta: 1,
+        }),
+      );
+    }
+  }
+
+  for (const chowOption of options.filter((option) => option.type === "claimChow")) {
+    const usedTileIds = getTilesForNeededTypes(player.hand || [], chowOption.neededTypes || []);
+    if (usedTileIds.length === 2) {
+      candidates.push(
+        createAdvancedActionCandidate({
+          game,
+          playerSeat,
+          baseline,
+          battleProfile,
+          remainingHand: removeTileIdsFromHand(player.hand || [], usedTileIds),
+          lockedMeldsAfter: lockedMelds + 1,
+          option: chowOption,
+          infoMessage: "電腦正在評估是否吃牌...",
+          resultMessage: `電腦吃了 ${chowOption.label.replace(/^吃\s*/, "")}。`,
+          actionBonus: 10,
+          extraVisibleTileTypes: usedTileIds.map((tileId) => getTileType(tileId)),
+          analysisCache,
+          profile,
+          actionName: "吃牌",
+          exposureDelta: 1,
+        }),
+      );
+    }
+  }
+
+  const bestCandidate = pickBestActionCandidate(candidates);
+  if (bestCandidate && shouldTakeAdvancedAction(baseline, bestCandidate, battleProfile, profile)) {
+    return {
+      type: bestCandidate.option.type,
+      payload: bestCandidate.option.neededTypes ? { neededTypes: bestCandidate.option.neededTypes } : undefined,
+      delayMs: getBotDelay(),
+      infoMessage: bestCandidate.infoMessage,
+      resultMessage: bestCandidate.resultMessage,
+      debugSummary: bestCandidate.debugSummary,
+    };
+  }
+
+  return {
+    type: "passClaim",
+    delayMs: getBotDelay(600, 1100),
+    infoMessage: "電腦正在評估是否過牌...",
+    resultMessage: "電腦選擇過牌。",
+    debugSummary: buildPassDecisionSummary({
+      modeLabel: SOLO_DIFFICULTY_LABELS[profile.id],
+      reason: bestCandidate
+        ? `最佳候選 ${bestCandidate.actionName} EV ${bestCandidate.actionValue.toFixed(1)}，未達門檻。`
+        : "沒有任何吃碰槓候選可提升牌效。",
+    }),
+  };
+}
+
+function decideEasyKongAction(player, clientState, difficulty) {
+  const concealedKong = (clientState.concealedKongs || []).find((tileType) =>
+    shouldDeclareOwnKong(tileType, player.hand || [], difficulty),
+  );
+  if (concealedKong) {
+    return {
+      type: "concealedKong",
+      payload: { tileType: concealedKong },
+      delayMs: getBotDelay(),
+      infoMessage: "電腦正在考慮是否暗槓...",
+      resultMessage: `電腦暗槓 ${getTileLabel(concealedKong)}。`,
+    };
+  }
+
+  const addedKong = (clientState.addedKongs || []).find((option) =>
+    shouldDeclareOwnKong(option.tileType, player.hand || [], difficulty),
+  );
+  if (addedKong) {
+    return {
+      type: "addedKong",
+      payload: {
+        meldId: addedKong.meldId,
+        tileId: addedKong.tileId,
+      },
+      delayMs: getBotDelay(),
+      infoMessage: "電腦正在考慮是否補槓...",
+      resultMessage: `電腦補槓 ${getTileLabel(addedKong.tileType)}。`,
+    };
+  }
+
+  return null;
+}
+
 function decideStructuredKongAction(player, clientState) {
   const handTileIds = player.hand || [];
   const lockedMelds = Array.isArray(player.melds) ? player.melds.length : 0;
@@ -488,116 +539,89 @@ function decideStructuredKongAction(player, clientState) {
   return null;
 }
 
-function createClaimCandidate({ player, usedTileIds, lockedMeldsAfter, baseline, option, infoMessage, resultMessage, actionBonus }) {
-  const remainingHand = removeTileIdsFromHand(player.hand || [], usedTileIds);
-  const progress = evaluateHandProgress(remainingHand, lockedMeldsAfter);
-  return {
-    option,
-    progress,
-    infoMessage,
-    resultMessage,
-    actionValue: scoreActionOutcome(baseline, progress, actionBonus),
-  };
-}
+function decideAdvancedKongAction(game, playerSeat, player, clientState, profile) {
+  const handTileIds = player.hand || [];
+  const lockedMelds = Array.isArray(player.melds) ? player.melds.length : 0;
+  const analysisCache = createAnalysisCache();
+  const baseline = evaluateAdvancedHand(game, playerSeat, handTileIds, lockedMelds, [], analysisCache);
+  const battleProfile = deriveBattleProfile(game, playerSeat, baseline);
 
-function pickBestActionCandidate(candidates) {
-  return candidates.reduce((best, candidate) => {
-    if (!candidate) {
-      return best;
+  for (const tileType of clientState.concealedKongs || []) {
+    const usedTileIds = getTilesOfTypeFromHand(handTileIds, tileType, 4);
+    if (usedTileIds.length !== 4) {
+      continue;
     }
-    if (!best) {
-      return candidate;
+
+    const decision = createAdvancedActionCandidate({
+      game,
+      playerSeat,
+      baseline,
+      battleProfile,
+      remainingHand: removeTileIdsFromHand(handTileIds, usedTileIds),
+      lockedMeldsAfter: lockedMelds + 1,
+      option: { type: "concealedKong", tileType },
+      infoMessage: "電腦正在評估是否暗槓...",
+      resultMessage: `電腦暗槓 ${getTileLabel(tileType)}。`,
+      actionBonus: 28,
+      extraVisibleTileTypes: usedTileIds.map((tileId) => getTileType(tileId)),
+      analysisCache,
+      profile,
+      actionName: "暗槓",
+      exposureDelta: 1,
+      payload: { tileType },
+    });
+
+    if (shouldTakeAdvancedAction(baseline, decision, battleProfile, profile)) {
+      return {
+        type: "concealedKong",
+        payload: { tileType },
+        delayMs: getBotDelay(),
+        infoMessage: decision.infoMessage,
+        resultMessage: decision.resultMessage,
+        debugSummary: decision.debugSummary,
+      };
     }
-    if (candidate.progress.shanten < best.progress.shanten) {
-      return candidate;
+  }
+
+  for (const option of clientState.addedKongs || []) {
+    const decision = createAdvancedActionCandidate({
+      game,
+      playerSeat,
+      baseline,
+      battleProfile,
+      remainingHand: removeTileIdsFromHand(handTileIds, [option.tileId]),
+      lockedMeldsAfter: lockedMelds,
+      option,
+      infoMessage: "電腦正在評估是否補槓...",
+      resultMessage: `電腦補槓 ${getTileLabel(option.tileType)}。`,
+      actionBonus: 18,
+      extraVisibleTileTypes: [option.tileType],
+      analysisCache,
+      profile,
+      actionName: "補槓",
+      exposureDelta: 0.45,
+      payload: {
+        meldId: option.meldId,
+        tileId: option.tileId,
+      },
+    });
+
+    if (shouldTakeAdvancedAction(baseline, decision, battleProfile, profile)) {
+      return {
+        type: "addedKong",
+        payload: {
+          meldId: option.meldId,
+          tileId: option.tileId,
+        },
+        delayMs: getBotDelay(),
+        infoMessage: decision.infoMessage,
+        resultMessage: decision.resultMessage,
+        debugSummary: decision.debugSummary,
+      };
     }
-    if (candidate.progress.shanten > best.progress.shanten) {
-      return best;
-    }
-    if (candidate.actionValue > best.actionValue) {
-      return candidate;
-    }
-    if (candidate.actionValue < best.actionValue) {
-      return best;
-    }
-    return candidate.progress.score > best.progress.score ? candidate : best;
-  }, null);
-}
-
-function shouldTakeStructuredAction(baseline, progress, actionValue) {
-  if (progress.shanten < baseline.shanten) {
-    return true;
   }
 
-  if (progress.shanten > baseline.shanten) {
-    return false;
-  }
-
-  return actionValue >= 12;
-}
-
-function scoreActionOutcome(baseline, progress, actionBonus = 0) {
-  return (baseline.shanten - progress.shanten) * 220 + (progress.score - baseline.score) + actionBonus;
-}
-
-function shouldTakeSet(tileType, handCounts, difficulty, isKong) {
-  if (!tileType) {
-    return false;
-  }
-
-  if (isHonorTile(tileType)) {
-    return true;
-  }
-
-  const rank = getTileRank(tileType);
-  const suit = getTileSuit(tileType);
-  const leftCount = handCounts[`${suit}${rank - 1}`] || 0;
-  const rightCount = handCounts[`${suit}${rank + 1}`] || 0;
-  const isolated = leftCount === 0 && rightCount === 0;
-
-  if (isKong) {
-    return isolated || rank === 1 || rank === 9;
-  }
-
-  return isolated || difficulty !== DEFAULT_SOLO_DIFFICULTY;
-}
-
-function shouldTakeChow(neededTypes, handCounts) {
-  if (!Array.isArray(neededTypes) || neededTypes.length !== 2) {
-    return false;
-  }
-
-  return neededTypes.every((tileType) => (handCounts[tileType] || 0) === 1);
-}
-
-function shouldDeclareOwnKong(tileType, handTileIds, difficulty) {
-  const counts = countTileTypes(handTileIds || []);
-  if (!tileType || (counts[tileType] || 0) <= 0) {
-    return false;
-  }
-
-  if (isHonorTile(tileType)) {
-    return true;
-  }
-
-  if (difficulty !== DEFAULT_SOLO_DIFFICULTY) {
-    return true;
-  }
-
-  const rank = getTileRank(tileType);
-  return rank === 1 || rank === 9;
-}
-
-function chooseDiscardTile(game, playerSeat, player, difficulty = DEFAULT_SOLO_DIFFICULTY) {
-  const tileIds = Array.isArray(player && player.hand) ? [...player.hand] : [];
-  if (difficulty === "hard") {
-    return chooseProbabilisticDiscardTile(game, playerSeat, player);
-  }
-  if (difficulty === "normal") {
-    return chooseStructuredDiscardTile(player);
-  }
-
-  return chooseSimpleDiscardTile(tileIds);
+  return null;
 }
 
 function chooseSimpleDiscardTile(handTileIds) {
@@ -618,58 +642,7 @@ function chooseSimpleDiscardTile(handTileIds) {
   return bestTileId;
 }
 
-function chooseProbabilisticDiscardTile(game, playerSeat, player) {
-  const tileIds = Array.isArray(player && player.hand) ? [...player.hand] : [];
-  const counts = countTileTypes(tileIds);
-  const lockedMelds = Array.isArray(player && player.melds) ? player.melds.length : 0;
-  const analysisCache = createAnalysisCache();
-
-  let bestTileId = tileIds[0] || "";
-  let bestProgress = null;
-  let bestValue = -Infinity;
-
-  for (const tileId of tileIds) {
-    const remainingHand = removeTileIdsFromHand(tileIds, [tileId]);
-    const progress = evaluateProbabilisticHand(
-      game,
-      playerSeat,
-      remainingHand,
-      lockedMelds,
-      [getTileType(tileId)],
-      analysisCache,
-    );
-    const discardBias = scoreDiscardTile(tileId, counts);
-    const candidateValue = progress.totalScore + discardBias * 3;
-
-    if (!bestProgress) {
-      bestTileId = tileId;
-      bestProgress = progress;
-      bestValue = candidateValue;
-      continue;
-    }
-
-    if (progress.shanten < bestProgress.shanten) {
-      bestTileId = tileId;
-      bestProgress = progress;
-      bestValue = candidateValue;
-      continue;
-    }
-
-    if (progress.shanten > bestProgress.shanten) {
-      continue;
-    }
-
-    if (candidateValue > bestValue || (candidateValue === bestValue && tileId.localeCompare(bestTileId) > 0)) {
-      bestTileId = tileId;
-      bestProgress = progress;
-      bestValue = candidateValue;
-    }
-  }
-
-  return bestTileId;
-}
-
-function chooseStructuredDiscardTile(player) {
+function chooseStructuredDiscardDecision(player) {
   const tileIds = Array.isArray(player && player.hand) ? [...player.hand] : [];
   const counts = countTileTypes(tileIds);
   const lockedMelds = Array.isArray(player && player.melds) ? player.melds.length : 0;
@@ -720,69 +693,773 @@ function chooseStructuredDiscardTile(player) {
     }
   }
 
-  return bestTileId;
+  return {
+    tileId: bestTileId,
+    debugSummary: `普通模式：優先維持搭子、對子與向聽進展，選擇 ${getTileLabel(bestTileId)}。`,
+  };
 }
 
-function scoreDiscardTile(tileId, counts) {
-  const tileType = getTileType(tileId);
-  const duplicates = counts[tileType] || 0;
+function chooseAdvancedDiscardDecision(game, playerSeat, player, profile) {
+  const tileIds = Array.isArray(player && player.hand) ? [...player.hand] : [];
+  const counts = countTileTypes(tileIds);
+  const lockedMelds = Array.isArray(player && player.melds) ? player.melds.length : 0;
+  const analysisCache = createAnalysisCache();
+  const baseline = evaluateAdvancedHand(game, playerSeat, tileIds, lockedMelds, [], analysisCache);
+  const battleProfile = deriveBattleProfile(game, playerSeat, baseline);
+
+  const candidates = evaluateDiscardCandidates({
+    game,
+    playerSeat,
+    tileIds,
+    counts,
+    lockedMelds,
+    baseline,
+    battleProfile,
+    profile,
+    analysisCache,
+  });
+  const bestCandidate = candidates[0];
+
+  return {
+    tileId: bestCandidate.tileId,
+    debugSummary: buildDiscardDecisionSummary(profile, battleProfile, candidates),
+  };
+}
+
+function evaluateDiscardCandidates({
+  game,
+  playerSeat,
+  tileIds,
+  counts,
+  lockedMelds,
+  baseline,
+  battleProfile,
+  profile,
+  analysisCache,
+}) {
+  const candidates = getCandidateDiscardTileIds(tileIds).map((tileId) => {
+    const remainingHand = removeTileIdsFromHand(tileIds, [tileId]);
+    const progress = evaluateAdvancedHand(
+      game,
+      playerSeat,
+      remainingHand,
+      lockedMelds,
+      [getTileType(tileId)],
+      analysisCache,
+    );
+    const discardRisk = evaluateDiscardRisk(game, playerSeat, tileId, battleProfile, analysisCache);
+    const discardBias = scoreDiscardTile(tileId, counts);
+    const actionValue = evaluateActionEV({
+      baseline,
+      progress,
+      battleProfile,
+      actionBonus: 0,
+      discardRisk,
+      discardBias,
+      exposureDelta: 0,
+      lookaheadBonus: 0,
+      profile,
+    });
+
+    return {
+      tileId,
+      progress,
+      discardRisk,
+      discardBias,
+      actionValue,
+      lookaheadBonus: 0,
+      totalScore: actionValue,
+    };
+  });
+
+  sortDiscardCandidates(candidates);
+
+  if (profile.lookahead && shouldRunLookahead(baseline, candidates, profile)) {
+    const candidateLimit = profile.lookaheadCandidateLimit || DEFAULT_LOOKAHEAD_CANDIDATE_LIMIT;
+    for (const candidate of candidates.slice(0, candidateLimit)) {
+      candidate.lookaheadBonus = evaluateLookaheadPotential({
+        game,
+        playerSeat,
+        handTileIds: removeTileIdsFromHand(tileIds, [candidate.tileId]),
+        lockedMelds,
+        battleProfile,
+        analysisCache,
+        profile,
+      });
+      candidate.totalScore += candidate.lookaheadBonus;
+    }
+    sortDiscardCandidates(candidates);
+  }
+
+  return candidates;
+}
+
+function sortDiscardCandidates(candidates) {
+  candidates.sort((left, right) => {
+    if (left.progress.shanten !== right.progress.shanten) {
+      return left.progress.shanten - right.progress.shanten;
+    }
+    if (right.totalScore !== left.totalScore) {
+      return right.totalScore - left.totalScore;
+    }
+    if (left.discardRisk !== right.discardRisk) {
+      return left.discardRisk - right.discardRisk;
+    }
+    return left.tileId.localeCompare(right.tileId);
+  });
+}
+
+function createClaimCandidate({ player, usedTileIds, lockedMeldsAfter, baseline, option, infoMessage, resultMessage, actionBonus }) {
+  const remainingHand = removeTileIdsFromHand(player.hand || [], usedTileIds);
+  const progress = evaluateHandProgress(remainingHand, lockedMeldsAfter);
+  return {
+    option,
+    progress,
+    infoMessage,
+    resultMessage,
+    actionValue: scoreActionOutcome(baseline, progress, actionBonus),
+  };
+}
+
+function createAdvancedActionCandidate({
+  game,
+  playerSeat,
+  baseline,
+  battleProfile,
+  remainingHand,
+  lockedMeldsAfter,
+  option,
+  infoMessage,
+  resultMessage,
+  actionBonus,
+  extraVisibleTileTypes,
+  analysisCache,
+  profile,
+  actionName,
+  exposureDelta,
+  payload,
+}) {
+  const progress = evaluateAdvancedHand(
+    game,
+    playerSeat,
+    remainingHand,
+    lockedMeldsAfter,
+    extraVisibleTileTypes,
+    analysisCache,
+  );
+  const lookaheadBonus = profile.lookahead && baseline.shanten <= 2
+    ? evaluateLookaheadPotential({
+        game,
+        playerSeat,
+        handTileIds: remainingHand,
+        lockedMelds: lockedMeldsAfter,
+        battleProfile,
+        analysisCache,
+        profile,
+      })
+    : 0;
+  const actionValue = evaluateActionEV({
+    baseline,
+    progress,
+    battleProfile,
+      actionBonus,
+      discardRisk: 0,
+      discardBias: 0,
+      exposureDelta,
+      lookaheadBonus,
+      profile,
+    });
+
+  return {
+    option,
+    payload,
+    progress,
+    infoMessage,
+    resultMessage,
+    actionName,
+    actionValue,
+    lookaheadBonus,
+    exposureDelta,
+    debugSummary: buildActionDecisionSummary({
+      modeLabel: SOLO_DIFFICULTY_LABELS[profile.id],
+      actionName,
+      progress,
+      battleProfile,
+      actionValue,
+      lookaheadBonus,
+    }),
+  };
+}
+
+function pickBestActionCandidate(candidates) {
+  return candidates.reduce((best, candidate) => {
+    if (!candidate) {
+      return best;
+    }
+    if (!best) {
+      return candidate;
+    }
+    if (candidate.progress.shanten < best.progress.shanten) {
+      return candidate;
+    }
+    if (candidate.progress.shanten > best.progress.shanten) {
+      return best;
+    }
+    if (candidate.actionValue > best.actionValue) {
+      return candidate;
+    }
+    if (candidate.actionValue < best.actionValue) {
+      return best;
+    }
+    return candidate.progress.totalScore > best.progress.totalScore ? candidate : best;
+  }, null);
+}
+
+function shouldTakeStructuredAction(baseline, progress, actionValue) {
+  if (progress.shanten < baseline.shanten) {
+    return true;
+  }
+
+  if (progress.shanten > baseline.shanten) {
+    return false;
+  }
+
+  return actionValue >= 12;
+}
+
+function shouldTakeAdvancedAction(baseline, candidate, battleProfile, profile) {
+  const progress = candidate.progress;
+  const threshold = profile.actionThreshold + battleProfile.defenseWeight * 2;
+
+  if (progress.shanten < baseline.shanten) {
+    return true;
+  }
+
+  if (progress.shanten > baseline.shanten && candidate.lookaheadBonus < 24) {
+    return false;
+  }
+
+  if (progress.effectiveTileCount >= baseline.effectiveTileCount + 3) {
+    return true;
+  }
+
+  if (candidate.lookaheadBonus >= 28) {
+    return true;
+  }
+
+  return candidate.actionValue >= threshold;
+}
+
+function scoreActionOutcome(baseline, progress, actionBonus = 0) {
+  return (baseline.shanten - progress.shanten) * 220 + (progress.score - baseline.score) + actionBonus;
+}
+
+function evaluateActionEV({
+  baseline,
+  progress,
+  battleProfile,
+  actionBonus = 0,
+  discardRisk = 0,
+  discardBias = 0,
+  exposureDelta = 0,
+  lookaheadBonus = 0,
+  profile = DIFFICULTY_PROFILES.hard,
+}) {
+  const attackFactor = profile.attackFactor || 1;
+  const riskMultiplier = profile.riskMultiplier || 1;
+  const lookaheadWeight = profile.lookaheadWeight || 0;
+  const progressDelta = progress.totalScore - baseline.totalScore;
+
+  return (
+    progressDelta * attackFactor +
+    actionBonus +
+    discardBias * 2 -
+    discardRisk * battleProfile.defenseWeight * riskMultiplier -
+    exposureDelta * 18 * battleProfile.defenseWeight * riskMultiplier +
+    lookaheadBonus * lookaheadWeight
+  );
+}
+
+function shouldTakeSet(tileType, handCounts, difficulty, isKong) {
+  if (!tileType) {
+    return false;
+  }
 
   if (isHonorTile(tileType)) {
-    let score = 12;
-    if (duplicates >= 2) {
-      score -= 8;
-    }
-    if (duplicates >= 3) {
-      score -= 2;
-    }
-    return score;
+    return true;
   }
 
-  const suit = getTileSuit(tileType);
   const rank = getTileRank(tileType);
-  const leftOne = counts[`${suit}${rank - 1}`] || 0;
-  const rightOne = counts[`${suit}${rank + 1}`] || 0;
-  const leftTwo = counts[`${suit}${rank - 2}`] || 0;
-  const rightTwo = counts[`${suit}${rank + 2}`] || 0;
+  const suit = getTileSuit(tileType);
+  const leftCount = handCounts[`${suit}${rank - 1}`] || 0;
+  const rightCount = handCounts[`${suit}${rank + 1}`] || 0;
+  const isolated = leftCount === 0 && rightCount === 0;
 
+  if (isKong) {
+    return isolated || rank === 1 || rank === 9;
+  }
+
+  return isolated || difficulty !== DEFAULT_SOLO_DIFFICULTY;
+}
+
+function shouldTakeChow(neededTypes, handCounts) {
+  if (!Array.isArray(neededTypes) || neededTypes.length !== 2) {
+    return false;
+  }
+
+  return neededTypes.every((tileType) => (handCounts[tileType] || 0) === 1);
+}
+
+function shouldDeclareOwnKong(tileType, handTileIds, difficulty) {
+  const counts = countTileTypes(handTileIds || []);
+  if (!tileType || (counts[tileType] || 0) <= 0) {
+    return false;
+  }
+
+  if (isHonorTile(tileType)) {
+    return true;
+  }
+
+  if (difficulty !== DEFAULT_SOLO_DIFFICULTY) {
+    return true;
+  }
+
+  const rank = getTileRank(tileType);
+  return rank === 1 || rank === 9;
+}
+
+function evaluateAdvancedHand(game, playerSeat, handTileIds, lockedMelds = 0, extraVisibleTileTypes = [], analysisCache = createAnalysisCache()) {
+  const cacheKey = createAdvancedHandCacheKey(game, playerSeat, handTileIds, lockedMelds, extraVisibleTileTypes);
+  if (analysisCache.advancedCache.has(cacheKey)) {
+    return analysisCache.advancedCache.get(cacheKey);
+  }
+
+  const base = evaluateHandProgress(handTileIds, lockedMelds, analysisCache.progressCache);
+  const future = evaluateFutureDrawPotential(
+    game,
+    playerSeat,
+    handTileIds,
+    lockedMelds,
+    extraVisibleTileTypes,
+    base,
+    analysisCache,
+  );
+  const shapeScore = evaluateShape(base);
+  const availabilityScore = evaluateAvailability(future, base);
+  const flexibilityScore = evaluateFlexibility(handTileIds);
+  const totalScore = shapeScore + availabilityScore + flexibilityScore;
+
+  const result = {
+    ...base,
+    ...future,
+    shapeScore,
+    availabilityScore,
+    flexibilityScore,
+    totalScore,
+  };
+
+  analysisCache.advancedCache.set(cacheKey, result);
+  return result;
+}
+
+function evaluateShape(progress) {
+  return (
+    progress.melds * 120 +
+    progress.taatsu * 40 +
+    progress.pair * 20 -
+    progress.shanten * 220 -
+    progress.floating * 10 -
+    progress.isolated * 12
+  );
+}
+
+function evaluateAvailability(future, progress) {
+  return (
+    future.expectedImprovement * 1.35 +
+    future.effectiveTileCount * 10 +
+    future.improvementTypeCount * 5 +
+    (future.bestImprovement > 0 ? Math.min(future.bestImprovement, 220) * 0.25 : 0) -
+    progress.shanten * 6
+  );
+}
+
+function evaluateFlexibility(handTileIds) {
+  const counts = countTileTypes(handTileIds || []);
   let score = 0;
 
-  if (duplicates === 1) {
-    score += 4;
-  } else if (duplicates === 2) {
-    score -= 4;
-  } else if (duplicates >= 3) {
-    score -= 7;
-  }
+  for (const tileType of Object.keys(counts)) {
+    const count = counts[tileType] || 0;
+    if (!count) {
+      continue;
+    }
 
-  if (rank === 1 || rank === 9) {
-    score += 4;
-  } else if (rank === 2 || rank === 8) {
-    score += 2;
-  }
+    if (isHonorTile(tileType)) {
+      if (count === 1) {
+        score -= 4;
+      }
+      if (count >= 2) {
+        score += 6;
+      }
+      continue;
+    }
 
-  if (leftOne > 0) {
-    score -= 3;
-  }
-  if (rightOne > 0) {
-    score -= 3;
-  }
-  if (leftTwo > 0) {
-    score -= 1;
-  }
-  if (rightTwo > 0) {
-    score -= 1;
-  }
-
-  if (leftOne === 0 && rightOne === 0 && leftTwo === 0 && rightTwo === 0) {
-    score += 3;
-  }
-
-  if (rank >= 3 && rank <= 7 && leftOne > 0 && rightOne > 0) {
-    score -= 2;
+    const rank = getTileRank(tileType);
+    if (rank >= 3 && rank <= 7) {
+      score += count * 2;
+    }
+    if (rank === 1 || rank === 9) {
+      score -= count;
+    }
   }
 
   return score;
+}
+
+function deriveBattleProfile(game, playerSeat, baseProgress) {
+  const opponentSeat = getOpponentSeat(playerSeat);
+  const opponent = game && Array.isArray(game.players) ? game.players[opponentSeat] : null;
+  const openMelds = opponent && Array.isArray(opponent.melds) ? opponent.melds.filter((meld) => !meld.concealed).length : 0;
+  const opponentDiscardCount = opponent && Array.isArray(opponent.discards) ? opponent.discards.length : 0;
+
+  let attackWeight = 1;
+  let defenseWeight = 0.9;
+
+  if (baseProgress.shanten <= 1) {
+    attackWeight += 0.45;
+    defenseWeight -= 0.15;
+  } else if (baseProgress.shanten >= 4) {
+    attackWeight -= 0.12;
+    defenseWeight += 0.2;
+  }
+
+  if (openMelds >= 1) {
+    defenseWeight += 0.2 + openMelds * 0.1;
+  }
+
+  if (opponentDiscardCount >= 8) {
+    defenseWeight += 0.08;
+  }
+
+  const suitPressure = evaluateSuitPressure(opponent);
+  return {
+    attackWeight,
+    defenseWeight,
+    suitPressure,
+    opponentOpenMelds: openMelds,
+  };
+}
+
+function evaluateSuitPressure(opponent) {
+  const suitPressure = { m: 0, p: 0, s: 0, z: 0 };
+  if (!opponent) {
+    return suitPressure;
+  }
+
+  for (const meld of opponent.melds || []) {
+    for (const tileId of meld.tiles || []) {
+      const tileType = getTileType(tileId);
+      suitPressure[getTileSuit(tileType)] += meld.concealed ? 0.3 : 1;
+    }
+  }
+
+  for (const discard of opponent.discards || []) {
+    const tileType = getTileType(discard.tileId || discard);
+    suitPressure[getTileSuit(tileType)] -= 0.4;
+  }
+
+  return suitPressure;
+}
+
+function evaluateDiscardRisk(game, playerSeat, tileId, battleProfile, analysisCache) {
+  const tileType = getTileType(tileId);
+  const cacheKey = `${playerSeat}|${tileType}|${serializeSuitPressure(battleProfile.suitPressure)}`;
+  if (analysisCache.riskCache.has(cacheKey)) {
+    return analysisCache.riskCache.get(cacheKey);
+  }
+
+  const opponentSeat = getOpponentSeat(playerSeat);
+  const opponent = game && Array.isArray(game.players) ? game.players[opponentSeat] : null;
+  const visibleCounts = buildVisibleCounts(game, playerSeat, [], []);
+  const visibleCount = visibleCounts[tileType] || 0;
+  const opponentDiscardTypes = new Set(
+    (opponent && Array.isArray(opponent.discards) ? opponent.discards : []).map((discard) => getTileType(discard.tileId || discard)),
+  );
+
+  let risk = 14;
+
+  if (opponentDiscardTypes.has(tileType)) {
+    risk = 0;
+  } else if (isHonorTile(tileType)) {
+    risk = 24 - visibleCount * 5;
+    if ((battleProfile.suitPressure.z || 0) > 0) {
+      risk += 4;
+    }
+  } else {
+    const suit = getTileSuit(tileType);
+    const rank = getTileRank(tileType);
+    risk = rank >= 3 && rank <= 7 ? 18 : 15;
+    risk += (battleProfile.suitPressure[suit] || 0) * 4;
+    risk += visibleCount <= 1 ? 5 : visibleCount >= 3 ? -4 : 0;
+
+    const opponentDiscards = opponent && Array.isArray(opponent.discards) ? opponent.discards : [];
+    const sameSuitDiscards = opponentDiscards.filter((discard) => getTileSuit(getTileType(discard.tileId || discard)) === suit).length;
+    if (sameSuitDiscards <= 1) {
+      risk += 4;
+    }
+
+    const openMelds = opponent && Array.isArray(opponent.melds) ? opponent.melds.filter((meld) => !meld.concealed) : [];
+    for (const meld of openMelds) {
+      const meldSuit = getTileSuit(meld.tileType || getTileType(meld.tiles && meld.tiles[0] ? meld.tiles[0] : ""));
+      if (meldSuit !== suit) {
+        continue;
+      }
+      const meldRank = isSuitTile(meld.tileType) ? getTileRank(meld.tileType) : null;
+      if (meldRank && Math.abs(meldRank - rank) <= 2) {
+        risk += 6;
+      }
+    }
+  }
+
+  risk = Math.max(0, risk);
+  analysisCache.riskCache.set(cacheKey, risk);
+  return risk;
+}
+
+function serializeSuitPressure(suitPressure) {
+  return ["m", "p", "s", "z"].map((suit) => Number(suitPressure[suit] || 0).toFixed(2)).join(",");
+}
+
+function evaluateLookaheadPotential({ game, playerSeat, handTileIds, lockedMelds, battleProfile, analysisCache, profile }) {
+  const availability = buildAvailabilityMap(game, playerSeat, handTileIds, []);
+  const baseline = evaluateHandProgress(handTileIds, lockedMelds, analysisCache.progressCache);
+  const drawLimit = profile.lookaheadDrawLimit || DEFAULT_LOOKAHEAD_DRAW_LIMIT;
+
+  const drawCandidates = Object.entries(availability)
+    .filter(([, count]) => count > 0)
+    .map(([tileType, count]) => {
+      const drawnTileId = `${tileType}-future`;
+      const drawnHand = [...handTileIds, drawnTileId];
+      const drawProgress = evaluateHandProgress(drawnHand, lockedMelds, analysisCache.progressCache);
+      const followUp = chooseBestLookaheadDiscard({
+        tileIds: drawnHand,
+        lockedMelds,
+        analysisCache,
+      });
+      const immediateGain = (baseline.shanten - drawProgress.shanten) * 180 + (drawProgress.score - baseline.score);
+      const followUpGain = followUp.totalScore - baseline.score;
+
+      return {
+        tileType,
+        count,
+        followUpValue: immediateGain * 0.55 + followUpGain,
+      };
+    })
+    .sort((left, right) => {
+      if (right.followUpValue !== left.followUpValue) {
+        return right.followUpValue - left.followUpValue;
+      }
+      return right.count - left.count;
+    })
+    .slice(0, drawLimit);
+
+  const totalWeight = drawCandidates.reduce((sum, candidate) => sum + candidate.count, 0);
+  if (!totalWeight) {
+    return 0;
+  }
+
+  const weightedValue = drawCandidates.reduce(
+    (sum, candidate) => sum + candidate.followUpValue * candidate.count,
+    0,
+  );
+  return Math.max(0, weightedValue / totalWeight);
+}
+
+function shouldRunLookahead(baseline, candidates, profile) {
+  if (!candidates.length) {
+    return false;
+  }
+
+  const guaranteedShanten = profile.guaranteedLookaheadShanten || 0;
+  const maxShanten = profile.lookaheadMaxShanten || guaranteedShanten;
+  const activationGap = profile.lookaheadActivationGap || 0;
+
+  if (baseline.shanten <= guaranteedShanten) {
+    return true;
+  }
+
+  if (candidates.length === 1) {
+    return false;
+  }
+
+  return baseline.shanten <= maxShanten && Math.abs(candidates[0].totalScore - candidates[1].totalScore) <= activationGap;
+}
+
+function chooseBestLookaheadDiscard({ tileIds, lockedMelds, analysisCache }) {
+  const counts = countTileTypes(tileIds);
+  const candidates = getCandidateDiscardTileIds(tileIds).map((tileId) => {
+    const remainingHand = removeTileIdsFromHand(tileIds, [tileId]);
+    const progress = evaluateHandProgress(remainingHand, lockedMelds, analysisCache.progressCache);
+    const discardBias = scoreDiscardTile(tileId, counts);
+    const totalScore = progress.score + discardBias * 2;
+
+    return {
+      tileId,
+      progress,
+      totalScore,
+    };
+  });
+
+  sortDiscardCandidates(candidates);
+  return candidates[0];
+}
+
+function evaluateFutureDrawPotential(
+  game,
+  playerSeat,
+  handTileIds,
+  lockedMelds,
+  extraVisibleTileTypes,
+  baseProgress,
+  analysisCache,
+) {
+  const availability = buildAvailabilityMap(game, playerSeat, handTileIds, extraVisibleTileTypes);
+  const totalAvailable = Object.values(availability).reduce((sum, count) => sum + count, 0);
+
+  if (!totalAvailable) {
+    return {
+      expectedImprovement: -24,
+      effectiveTileCount: 0,
+      improvementTypeCount: 0,
+      bestDrawType: null,
+      bestImprovement: -24,
+    };
+  }
+
+  let weightedImprovement = 0;
+  let effectiveTileCount = 0;
+  let improvementTypeCount = 0;
+  let bestDrawType = null;
+  let bestImprovement = -Infinity;
+
+  for (const [tileType, availableCount] of Object.entries(availability)) {
+    if (availableCount <= 0) {
+      continue;
+    }
+
+    const progress = evaluateHandProgress([...handTileIds, tileType], lockedMelds, analysisCache.progressCache);
+    const improvement = (baseProgress.shanten - progress.shanten) * 240 + (progress.score - baseProgress.score);
+    weightedImprovement += improvement * availableCount;
+
+    if (improvement > 0) {
+      effectiveTileCount += availableCount;
+      improvementTypeCount += 1;
+    }
+
+    if (improvement > bestImprovement) {
+      bestImprovement = improvement;
+      bestDrawType = tileType;
+    }
+  }
+
+  return {
+    expectedImprovement: weightedImprovement / totalAvailable,
+    effectiveTileCount,
+    improvementTypeCount,
+    bestDrawType,
+    bestImprovement,
+  };
+}
+
+function buildAvailabilityMap(game, playerSeat, handTileIds, extraVisibleTileTypes = []) {
+  const ruleset = getRuleset((game && game.rulesetId) || undefined);
+  const visibleCounts = buildVisibleCounts(game, playerSeat, handTileIds, extraVisibleTileTypes);
+  const availability = {};
+  for (const tileType of ruleset.tileTypes) {
+    availability[tileType] = Math.max(0, 4 - (visibleCounts[tileType] || 0));
+  }
+  return availability;
+}
+
+function buildVisibleCounts(game, playerSeat, handTileIds = [], extraVisibleTileTypes = []) {
+  const visibleCounts = {};
+
+  for (const player of game && Array.isArray(game.players) ? game.players : []) {
+    for (const discard of player.discards || []) {
+      incrementTileTypeCount(visibleCounts, getTileType(discard.tileId || discard));
+    }
+    for (const meld of player.melds || []) {
+      for (const tileId of meld.tiles || []) {
+        incrementTileTypeCount(visibleCounts, getTileType(tileId));
+      }
+    }
+  }
+
+  for (const tileId of handTileIds || []) {
+    incrementTileTypeCount(visibleCounts, getTileType(tileId));
+  }
+
+  for (const tileType of extraVisibleTileTypes || []) {
+    incrementTileTypeCount(visibleCounts, tileType);
+  }
+
+  return visibleCounts;
+}
+
+function incrementTileTypeCount(counts, tileType) {
+  if (!tileType) {
+    return;
+  }
+  counts[tileType] = (counts[tileType] || 0) + 1;
+}
+
+function createAdvancedHandCacheKey(game, playerSeat, handTileIds, lockedMelds, extraVisibleTileTypes) {
+  const counts = countTileTypes(handTileIds || []);
+  const countKey = ALL_TILE_TYPES.map((tileType) => counts[tileType] || 0).join(",");
+  const extraKey = [...(extraVisibleTileTypes || [])].map(getTileType).sort().join(",");
+  const round = game && typeof game.roundNumber === "number" ? game.roundNumber : 0;
+  const latestDiscardId = game && game.latestDiscard ? game.latestDiscard.id : 0;
+  return `${round}|${latestDiscardId}|${playerSeat}|${lockedMelds}|${countKey}|${extraKey}`;
+}
+
+function buildDiscardDecisionSummary(profile, battleProfile, candidates) {
+  const topCandidates = candidates.slice(0, 3).map((candidate) => {
+    const parts = [
+      `${getTileLabel(candidate.tileId)}`,
+      `向聽 ${candidate.progress.shanten}`,
+      `進張 ${candidate.progress.effectiveTileCount}`,
+      `風險 ${candidate.discardRisk.toFixed(1)}`,
+      `總分 ${candidate.totalScore.toFixed(1)}`,
+    ];
+    if (candidate.lookaheadBonus) {
+      parts.push(`預測 ${candidate.lookaheadBonus.toFixed(1)}`);
+    }
+    return parts.join(" / ");
+  });
+
+  return [
+    `${SOLO_DIFFICULTY_LABELS[profile.id]}模式：攻擊權重 ${battleProfile.attackWeight.toFixed(2)}，防守權重 ${battleProfile.defenseWeight.toFixed(2)}。`,
+    `候選前三：${topCandidates.join("；")}`,
+    `最終選擇 ${getTileLabel(candidates[0].tileId)}。`,
+  ].join(" ");
+}
+
+function buildActionDecisionSummary({ modeLabel, actionName, progress, battleProfile, actionValue, lookaheadBonus }) {
+  const parts = [
+    `${modeLabel}模式評估${actionName}`,
+    `向聽 ${progress.shanten}`,
+    `進張 ${progress.effectiveTileCount}`,
+    `總分 ${actionValue.toFixed(1)}`,
+    `攻擊 ${battleProfile.attackWeight.toFixed(2)}`,
+    `防守 ${battleProfile.defenseWeight.toFixed(2)}`,
+  ];
+  if (lookaheadBonus) {
+    parts.push(`預測 ${lookaheadBonus.toFixed(1)}`);
+  }
+  return parts.join(" / ");
+}
+
+function buildPassDecisionSummary({ modeLabel, reason }) {
+  return `${modeLabel}模式選擇過牌：${reason}`;
 }
 
 function getBotDelay(min = 800, max = 1500) {
@@ -1053,6 +1730,84 @@ function removeTileIdsFromHand(handTileIds, tileIdsToRemove) {
   return remaining;
 }
 
+function getCandidateDiscardTileIds(tileIds) {
+  const seenTypes = new Set();
+  const candidates = [];
+
+  for (const tileId of tileIds || []) {
+    const tileType = getTileType(tileId);
+    if (seenTypes.has(tileType)) {
+      continue;
+    }
+    seenTypes.add(tileType);
+    candidates.push(tileId);
+  }
+
+  return candidates;
+}
+
+function scoreDiscardTile(tileId, counts) {
+  const tileType = getTileType(tileId);
+  const duplicates = counts[tileType] || 0;
+
+  if (isHonorTile(tileType)) {
+    let score = 12;
+    if (duplicates >= 2) {
+      score -= 8;
+    }
+    if (duplicates >= 3) {
+      score -= 2;
+    }
+    return score;
+  }
+
+  const suit = getTileSuit(tileType);
+  const rank = getTileRank(tileType);
+  const leftOne = counts[`${suit}${rank - 1}`] || 0;
+  const rightOne = counts[`${suit}${rank + 1}`] || 0;
+  const leftTwo = counts[`${suit}${rank - 2}`] || 0;
+  const rightTwo = counts[`${suit}${rank + 2}`] || 0;
+
+  let score = 0;
+
+  if (duplicates === 1) {
+    score += 4;
+  } else if (duplicates === 2) {
+    score -= 4;
+  } else if (duplicates >= 3) {
+    score -= 7;
+  }
+
+  if (rank === 1 || rank === 9) {
+    score += 4;
+  } else if (rank === 2 || rank === 8) {
+    score += 2;
+  }
+
+  if (leftOne > 0) {
+    score -= 3;
+  }
+  if (rightOne > 0) {
+    score -= 3;
+  }
+  if (leftTwo > 0) {
+    score -= 1;
+  }
+  if (rightTwo > 0) {
+    score -= 1;
+  }
+
+  if (leftOne === 0 && rightOne === 0 && leftTwo === 0 && rightTwo === 0) {
+    score += 3;
+  }
+
+  if (rank >= 3 && rank <= 7 && leftOne > 0 && rightOne > 0) {
+    score -= 2;
+  }
+
+  return score;
+}
+
 function scoreConnections(counts) {
   let score = 0;
 
@@ -1088,172 +1843,14 @@ function scoreConnections(counts) {
   return score;
 }
 
-function createProbabilisticActionCandidate({
-  game,
-  playerSeat,
-  remainingHand,
-  lockedMeldsAfter,
-  baseline,
-  option,
-  infoMessage,
-  resultMessage,
-  actionBonus,
-  extraVisibleTileTypes,
-  analysisCache,
-}) {
-  const progress = evaluateProbabilisticHand(
-    game,
-    playerSeat,
-    remainingHand,
-    lockedMeldsAfter,
-    extraVisibleTileTypes,
-    analysisCache,
-  );
-  return {
-    option,
-    progress,
-    infoMessage,
-    resultMessage,
-    actionValue: scoreProbabilisticOutcome(baseline, progress, actionBonus),
-  };
-}
-
-function shouldTakeProbabilisticAction(baseline, progress, actionValue) {
-  if (progress.shanten < baseline.shanten) {
-    return true;
-  }
-
-  if (progress.shanten > baseline.shanten) {
-    return false;
-  }
-
-  if (progress.effectiveTileCount > baseline.effectiveTileCount + 2) {
-    return true;
-  }
-
-  return actionValue >= 18;
-}
-
-function scoreProbabilisticOutcome(baseline, progress, actionBonus = 0) {
-  return progress.totalScore - baseline.totalScore + actionBonus;
-}
-
-function evaluateProbabilisticHand(game, playerSeat, handTileIds, lockedMelds = 0, extraVisibleTileTypes = [], analysisCache = createAnalysisCache()) {
-  const base = evaluateHandProgress(handTileIds, lockedMelds, analysisCache.progressCache);
-  const future = evaluateFutureDrawPotential(
-    game,
-    playerSeat,
-    handTileIds,
-    lockedMelds,
-    extraVisibleTileTypes,
-    base,
-    analysisCache,
-  );
-  const totalScore = base.score * 2 + future.expectedImprovement * 1.35 + future.effectiveTileCount * 8 + future.improvementTypeCount * 4;
-
-  return {
-    ...base,
-    ...future,
-    totalScore,
-  };
-}
-
-function evaluateFutureDrawPotential(
-  game,
-  playerSeat,
-  handTileIds,
-  lockedMelds,
-  extraVisibleTileTypes,
-  baseProgress,
-  analysisCache,
-) {
-  const availability = buildAvailabilityMap(game, playerSeat, handTileIds, extraVisibleTileTypes);
-  const totalAvailable = Object.values(availability).reduce((sum, count) => sum + count, 0);
-
-  if (!totalAvailable) {
-    return {
-      expectedImprovement: -24,
-      effectiveTileCount: 0,
-      improvementTypeCount: 0,
-      bestDrawType: null,
-      bestImprovement: -24,
-    };
-  }
-
-  let weightedImprovement = 0;
-  let effectiveTileCount = 0;
-  let improvementTypeCount = 0;
-  let bestDrawType = null;
-  let bestImprovement = -Infinity;
-
-  for (const [tileType, availableCount] of Object.entries(availability)) {
-    if (availableCount <= 0) {
-      continue;
-    }
-
-    const progress = evaluateHandProgress([...handTileIds, tileType], lockedMelds, analysisCache.progressCache);
-    const improvement = (baseProgress.shanten - progress.shanten) * 240 + (progress.score - baseProgress.score);
-    weightedImprovement += improvement * availableCount;
-
-    if (improvement > 0) {
-      effectiveTileCount += availableCount;
-      improvementTypeCount += 1;
-    }
-
-    if (improvement > bestImprovement) {
-      bestImprovement = improvement;
-      bestDrawType = tileType;
-    }
-  }
-
-  return {
-    expectedImprovement: weightedImprovement / totalAvailable,
-    effectiveTileCount,
-    improvementTypeCount,
-    bestDrawType,
-    bestImprovement,
-  };
-}
-
-function buildAvailabilityMap(game, playerSeat, handTileIds, extraVisibleTileTypes = []) {
-  const ruleset = getRuleset((game && game.rulesetId) || undefined);
-  const visibleCounts = {};
-
-  for (const player of game && Array.isArray(game.players) ? game.players : []) {
-    for (const discard of player.discards || []) {
-      incrementTileTypeCount(visibleCounts, getTileType(discard.tileId || discard));
-    }
-    for (const meld of player.melds || []) {
-      for (const tileId of meld.tiles || []) {
-        incrementTileTypeCount(visibleCounts, getTileType(tileId));
-      }
-    }
-  }
-
-  for (const tileId of handTileIds || []) {
-    incrementTileTypeCount(visibleCounts, getTileType(tileId));
-  }
-
-  for (const tileType of extraVisibleTileTypes || []) {
-    incrementTileTypeCount(visibleCounts, tileType);
-  }
-
-  const availability = {};
-  for (const tileType of ruleset.tileTypes) {
-    availability[tileType] = Math.max(0, 4 - (visibleCounts[tileType] || 0));
-  }
-  return availability;
-}
-
-function incrementTileTypeCount(counts, tileType) {
-  if (!tileType) {
-    return;
-  }
-  counts[tileType] = (counts[tileType] || 0) + 1;
-}
-
 function createAnalysisCache() {
   return {
     progressCache: new Map(),
+    advancedCache: new Map(),
+    riskCache: new Map(),
   };
+}
+
+function getOpponentSeat(seat) {
+  return seat === 0 ? 1 : 0;
 }

@@ -12,7 +12,7 @@ import {
   SOLO_DIFFICULTY_LABELS,
   decideBotAction,
   normalizeSoloDifficulty,
-} from "./bot-ai.js?v=20260427j";
+} from "./bot-ai.js?v=20260427l";
 
 const PLAYER_NAME_KEY = "mahjong-player-name";
 const SOLO_DIFFICULTY_STORAGE_KEY = "mahjong-solo-difficulty";
@@ -184,6 +184,10 @@ export class SoloController {
   runBotAction(action) {
     if (!this.room || !this.room.game) {
       return;
+    }
+
+    if (action && action.debugSummary) {
+      console.debug(`[BOT ${SOLO_DIFFICULTY_LABELS[this.room.meta.soloDifficulty] || this.room.meta.soloDifficulty}]`, action.debugSummary);
     }
 
     const result = applyGameCommand(this.room.game, {
