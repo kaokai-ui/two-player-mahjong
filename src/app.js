@@ -1,6 +1,7 @@
-import { DEFAULT_DRAW_REVEAL_SECONDS, getPlayerClientState } from "./game.js?v=20260426c";
-import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260426e";
+import { DEFAULT_DRAW_REVEAL_SECONDS, getPlayerClientState } from "./game.js?v=20260427g";
+import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260427g";
 import { DEFAULT_RULESET, getRuleset, getTileType, sortTileIds } from "./rules.js?v=20260425i";
+import { DEFAULT_SOLO_DIFFICULTY, SOLO_DIFFICULTY_LABELS, SoloController, normalizeSoloDifficulty } from "./solo-controller.js?v=20260427j";
 import { getTileSvgMarkup } from "./tile-art.js?v=20260425z";
 
 const elements = {
@@ -9,10 +10,18 @@ const elements = {
   createRoomForm: document.querySelector("#create-room-form"),
   joinRoomForm: document.querySelector("#join-room-form"),
   playerNameInput: document.querySelector("#player-name-input"),
+  gameModeSelect: document.querySelector("#game-mode-select"),
+  lobbyTitle: document.querySelector("#lobby-title"),
+  lobbyDescription: document.querySelector("#lobby-description"),
+  createRoomTitle: document.querySelector("#create-room-title"),
+  createRoomCodeField: document.querySelector("#create-room-code-field"),
   createRoomCodeInput: document.querySelector("#create-room-code-input"),
   joinRoomCodeInput: document.querySelector("#join-room-code-input"),
   createRulesetSelect: document.querySelector("#create-ruleset-select"),
+  createSoloDifficultyField: document.querySelector("#create-solo-difficulty-field"),
+  createSoloDifficultySelect: document.querySelector("#create-solo-difficulty-select"),
   createDrawRevealSecondsSelect: document.querySelector("#create-draw-reveal-seconds-select"),
+  createRoomSubmitButton: document.querySelector("#create-room-submit-button"),
   createRoomButton: document.querySelector('[data-submit-action="create-room"]'),
   joinRoomButton: document.querySelector('[data-submit-action="join-room"]'),
   createRoomFeedback: document.querySelector("#create-room-feedback"),
@@ -20,6 +29,13 @@ const elements = {
   roomPanel: document.querySelector("#room-panel"),
   gamePanel: document.querySelector("#game-panel"),
 };
+
+const GAME_MODE_STORAGE_KEY = "mahjong-game-mode";
+const SOLO_DIFFICULTY_STORAGE_KEY = "mahjong-solo-difficulty";
+const GAME_MODE_ONLINE = "online";
+const GAME_MODE_SOLO = "solo-bot";
+const DRAW_REVEAL_FINAL_STEP_MS = 100;
+const DRAW_REVEAL_GRACE_MS = 350;
 
 const appState = {
   room: null,
@@ -31,6 +47,8 @@ const appState = {
   drawRevealEndsAt: 0,
   countdownTimer: 0,
   autoDrawKey: "",
+  selectedMode: GAME_MODE_ONLINE,
+  selectedSoloDifficulty: DEFAULT_SOLO_DIFFICULTY,
 };
 
 const TILE_NUMBER_LABELS = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
@@ -53,41 +71,27 @@ const TILE_GLYPHS = {
   B: String.fromCodePoint(0x1f006),
 };
 
-const controller = new NetworkController({
-  onRoomChange: (room) => {
-    appState.room = room;
-    render();
-  },
-  onInfo: (message) => {
-    appState.message = message;
-    render();
-  },
-  onError: (message) => {
-    appState.error = message;
-    render();
-  },
-  onStatusChange: () => {
-    render();
-  },
-});
+const queryRoom = new URL(window.location.href).searchParams.get("room");
+const storedMode = readLocalSetting(GAME_MODE_STORAGE_KEY) || GAME_MODE_ONLINE;
+appState.selectedMode = queryRoom ? GAME_MODE_ONLINE : normalizeGameMode(storedMode);
+appState.selectedSoloDifficulty = normalizeSoloDifficulty(readLocalSetting(SOLO_DIFFICULTY_STORAGE_KEY));
 
-controller.init().catch((error) => {
-  appState.error = error.message;
-  render();
-});
+let controller = null;
+let controllerInitToken = 0;
+
+if (queryRoom) {
+  elements.joinRoomCodeInput.value = normalizeRoomId(queryRoom);
+}
+
+elements.gameModeSelect.value = appState.selectedMode;
+elements.createSoloDifficultySelect.value = appState.selectedSoloDifficulty;
+syncModeSpecificInputs();
 
 document.addEventListener("fullscreenchange", render);
 document.addEventListener("webkitfullscreenchange", render);
 
-const identity = controller.getIdentity();
-if (identity.playerName) {
-  elements.playerNameInput.value = identity.playerName;
-}
-
-const queryRoom = new URL(window.location.href).searchParams.get("room");
-if (queryRoom) {
-  elements.joinRoomCodeInput.value = normalizeRoomId(queryRoom);
-}
+initializeController(appState.selectedMode);
+syncPlayerNameFromController();
 
 elements.createRoomCodeInput.value = createRandomRoomId();
 moveCreateRevealFieldAboveButton();
@@ -110,6 +114,21 @@ elements.createRoomButton.addEventListener("click", async (event) => {
 elements.joinRoomButton.addEventListener("click", async (event) => {
   event.preventDefault();
   await handleJoinRoomSubmit();
+});
+
+elements.gameModeSelect.addEventListener("change", async () => {
+  const nextMode = normalizeGameMode(elements.gameModeSelect.value);
+  if (nextMode === appState.selectedMode) {
+    return;
+  }
+
+  switchMode(nextMode);
+});
+
+elements.createSoloDifficultySelect.addEventListener("change", () => {
+  appState.selectedSoloDifficulty = normalizeSoloDifficulty(elements.createSoloDifficultySelect.value);
+  writeLocalSetting(SOLO_DIFFICULTY_STORAGE_KEY, appState.selectedSoloDifficulty);
+  render();
 });
 
 elements.createRoomForm.addEventListener("click", (event) => {
@@ -212,11 +231,115 @@ function moveCreateRevealFieldAboveButton() {
   elements.createRoomForm.insertBefore(revealField, elements.createRoomButton);
 }
 
+function buildController(mode) {
+  const callbacks = {
+    onRoomChange: (room) => {
+      appState.room = room;
+      render();
+    },
+    onInfo: (message) => {
+      appState.message = message;
+      render();
+    },
+    onError: (message) => {
+      appState.error = message;
+      render();
+    },
+    onStatusChange: () => {
+      render();
+    },
+  };
+
+  return mode === GAME_MODE_SOLO ? new SoloController(callbacks) : new NetworkController(callbacks);
+}
+
+async function initializeController(mode) {
+  const token = ++controllerInitToken;
+
+  if (controller) {
+    controller.leaveRoom();
+  }
+
+  controller = buildController(mode);
+  appState.room = null;
+  appState.message = "";
+  appState.error = "";
+  appState.lastLobbyAction = "";
+  clearDrawRevealState();
+  appState.autoDrawKey = "";
+  render();
+
+  try {
+    await controller.init();
+    if (token !== controllerInitToken) {
+      return;
+    }
+    syncPlayerNameFromController();
+    render();
+  } catch (error) {
+    if (token !== controllerInitToken) {
+      return;
+    }
+    appState.error = error.message;
+    render();
+  }
+}
+
+function syncPlayerNameFromController() {
+  if (!controller || !elements.playerNameInput) {
+    return;
+  }
+
+  const identity = controller.getIdentity();
+  if (identity && identity.playerName) {
+    elements.playerNameInput.value = identity.playerName;
+  }
+}
+
+function switchMode(mode) {
+  appState.selectedMode = mode;
+  writeLocalSetting(GAME_MODE_STORAGE_KEY, mode);
+  clearShareLink();
+  elements.gameModeSelect.value = mode;
+  syncModeSpecificInputs();
+  initializeController(mode);
+}
+
+function syncModeSpecificInputs() {
+  if (appState.selectedMode === GAME_MODE_SOLO) {
+    if (elements.createRoomCodeInput) {
+      elements.createRoomCodeInput.value = "";
+    }
+    if (elements.joinRoomCodeInput) {
+      elements.joinRoomCodeInput.value = "";
+    }
+    return;
+  }
+
+  if (elements.createRoomCodeInput && !elements.createRoomCodeInput.value.trim()) {
+    elements.createRoomCodeInput.value = createRandomRoomId();
+  }
+}
+
 async function handleCreateRoomSubmit() {
   appState.error = "";
   appState.lastLobbyAction = "create";
 
   try {
+    if (appState.selectedMode === GAME_MODE_SOLO) {
+      await controller.createSoloGame({
+        playerName: elements.playerNameInput.value,
+        rulesetId: elements.createRulesetSelect.value || DEFAULT_RULESET,
+        drawRevealSeconds: readCreateDrawRevealSeconds(),
+        difficulty: appState.selectedSoloDifficulty,
+      });
+      appState.message = "已開始單人對局。";
+      appState.lastLobbyAction = "";
+      clearShareLink();
+      render();
+      return;
+    }
+
     await controller.createRoom({
       roomId: elements.createRoomCodeInput.value,
       playerName: elements.playerNameInput.value,
@@ -238,6 +361,10 @@ async function handleJoinRoomSubmit() {
   appState.lastLobbyAction = "join";
 
   try {
+    if (appState.selectedMode !== GAME_MODE_ONLINE) {
+      throw new Error("單人模式不需要加入房間。");
+    }
+
     await controller.joinRoom({
       roomId: elements.joinRoomCodeInput.value,
       playerName: elements.playerNameInput.value,
@@ -254,11 +381,65 @@ async function handleJoinRoomSubmit() {
 
 function render() {
   updatePageMode();
+  renderModeUi();
   renderBanner();
   renderFirebaseStatus();
   renderLobbyFeedback();
   renderRoomPanel();
   renderGamePanel();
+}
+
+function renderModeUi() {
+  const isSoloMode = appState.selectedMode === GAME_MODE_SOLO;
+
+  if (elements.gameModeSelect && elements.gameModeSelect.value !== appState.selectedMode) {
+    elements.gameModeSelect.value = appState.selectedMode;
+  }
+
+  if (elements.createSoloDifficultySelect && elements.createSoloDifficultySelect.value !== appState.selectedSoloDifficulty) {
+    elements.createSoloDifficultySelect.value = appState.selectedSoloDifficulty;
+  }
+
+  if (elements.lobbyTitle) {
+    elements.lobbyTitle.textContent = isSoloMode ? "開始單人對局" : "建立或加入房間";
+  }
+
+  if (elements.lobbyDescription) {
+    elements.lobbyDescription.textContent = isSoloMode
+      ? "單人模式不需要 Firebase 房間，電腦玩家會直接在這台裝置上思考與出牌。"
+      : "建立新房後，把房號分享給另一位玩家；雙方都加入後就可以開始對局。";
+  }
+
+  if (elements.createRoomTitle) {
+    elements.createRoomTitle.textContent = isSoloMode ? "單人對電腦" : "建立房間";
+  }
+
+  if (elements.createRoomSubmitButton) {
+    elements.createRoomSubmitButton.textContent = isSoloMode ? "開始單人遊戲" : "建立房間";
+  }
+
+  if (elements.createRoomCodeField) {
+    elements.createRoomCodeField.hidden = isSoloMode;
+    elements.createRoomCodeField.style.display = isSoloMode ? "none" : "";
+  }
+
+  if (elements.createRoomCodeInput) {
+    elements.createRoomCodeInput.disabled = isSoloMode;
+  }
+
+  if (elements.createSoloDifficultyField) {
+    elements.createSoloDifficultyField.hidden = !isSoloMode;
+    elements.createSoloDifficultyField.style.display = isSoloMode ? "" : "none";
+  }
+
+  if (elements.joinRoomForm) {
+    elements.joinRoomForm.hidden = isSoloMode;
+    elements.joinRoomForm.style.display = isSoloMode ? "none" : "";
+  }
+
+  if (elements.joinRoomCodeInput) {
+    elements.joinRoomCodeInput.disabled = isSoloMode;
+  }
 }
 
 function renderBanner() {
@@ -299,6 +480,25 @@ function renderLobbyFeedback() {
 }
 
 function renderFirebaseStatus() {
+  if (appState.selectedMode === GAME_MODE_SOLO) {
+    elements.createRoomButton.disabled = false;
+    elements.joinRoomButton.disabled = true;
+    elements.firebaseStatus.innerHTML = `
+      <div class="status-card status-ready">
+        <span class="status-dot"></span>
+        <div>
+          <strong>單人本機模式</strong>
+          <p>不需要 Firebase、房號或 App Check，電腦玩家會在這台裝置上運行。</p>
+          <div class="pill-row">
+            <span class="pill">模式：單人對電腦</span>
+            <span class="pill">難度：${escapeHtml(SOLO_DIFFICULTY_LABELS[appState.selectedSoloDifficulty] || SOLO_DIFFICULTY_LABELS[DEFAULT_SOLO_DIFFICULTY])}</span>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
   const status = controller.getSetupState();
   const ready = Boolean(status.ready && status.authReady);
   const title = !status.configured
@@ -341,11 +541,11 @@ function renderRoomPanel() {
   if (!room) {
     elements.roomPanel.innerHTML = `
       <div class="panel-head">
-        <h2>房間</h2>
-        <p>建立或加入房間後即可開始。</p>
+        <h2>${appState.selectedMode === GAME_MODE_SOLO ? "單人模式" : "房間"}</h2>
+        <p>${appState.selectedMode === GAME_MODE_SOLO ? "設定規則後即可開始單人對局。" : "建立或加入房間後即可開始。"}</p>
       </div>
       <div class="empty-state">
-        <p>尚未加入房間。</p>
+        <p>${appState.selectedMode === GAME_MODE_SOLO ? "尚未開始單人對局。" : "尚未加入房間。"}</p>
       </div>
     `;
     return;
@@ -355,6 +555,7 @@ function renderRoomPanel() {
   const currentPlayer = getCurrentPlayer(room);
   const isHost = controller.isHost();
   const game = room.game || null;
+  const isSoloMode = isSoloRoom(room);
   const canStart = players.length === 2 && (!game || game.status !== "playing");
   const currentRuleset = getRuleset(room.rulesetId || (game && game.rulesetId) || DEFAULT_RULESET);
   const startLabel = game && game.status === "finished" ? "重新開局" : "開始對局";
@@ -364,13 +565,13 @@ function renderRoomPanel() {
   elements.roomPanel.innerHTML = `
     <div class="panel-head">
       <div>
-        <h2>房間 ${escapeHtml(room.roomId)}</h2>
+        <h2>${isSoloMode ? "單人對電腦" : `房間 ${escapeHtml(room.roomId)}`}</h2>
         <p>${escapeHtml(currentRuleset.description)}</p>
       </div>
       <div class="room-actions">
-        <button class="ghost-button" data-room-action="copy-link">複製邀請連結</button>
+        ${isSoloMode ? "" : `<button class="ghost-button" data-room-action="copy-link">複製邀請連結</button>`}
         ${
-          isHost
+          !isSoloMode && isHost
             ? `
               <label class="field room-inline-field">
                 <span>規則</span>
@@ -398,8 +599,10 @@ function renderRoomPanel() {
       </div>
       <div class="room-card">
         <h3>牌局狀態</h3>
-        <p class="phase-copy">${escapeHtml(describeGamePhase(game, currentPlayerSeat))}</p>
+        <p class="phase-copy">${escapeHtml(describeGamePhase(game, currentPlayerSeat, room))}</p>
         <div class="pill-row">
+          ${isSoloMode ? `<span class="pill">模式：單人對電腦</span>` : ""}
+          ${isSoloMode ? `<span class="pill">難度：${escapeHtml(SOLO_DIFFICULTY_LABELS[room.meta && room.meta.soloDifficulty] || SOLO_DIFFICULTY_LABELS[DEFAULT_SOLO_DIFFICULTY])}</span>` : ""}
           <span class="pill">規則：${escapeHtml(currentRuleset.name)}</span>
           <span class="pill">局數：${game && game.roundNumber != null ? game.roundNumber : 0}</span>
           <span class="pill">牌牆：${game && game.wall ? game.wall.length : 0}</span>
@@ -417,7 +620,7 @@ function renderGamePanel() {
     elements.gamePanel.innerHTML = `
       <div class="panel-head">
         <h2>牌桌</h2>
-        <p>加入房間後會顯示牌桌。</p>
+        <p>${appState.selectedMode === GAME_MODE_SOLO ? "開始單人遊戲後會顯示牌桌。" : "加入房間後會顯示牌桌。"}</p>
       </div>
     `;
     return;
@@ -438,6 +641,7 @@ function renderGamePanel() {
   const seat = currentPlayer.seat;
   const opponent = players.find((player) => player.seat !== seat);
   const game = room.game;
+  const showOpponentHand = Boolean(room.meta && room.meta.godViewEnabled && room.hostPlayerId === currentPlayer.id);
   const opponentSeat = opponent ? opponent.seat : 0;
   const selfRoundState = game && game.players && game.players[seat] ? game.players[seat] : { hand: [], melds: [], discards: [] };
   const opponentRoundState =
@@ -453,7 +657,7 @@ function renderGamePanel() {
     <div class="panel-head">
       <div>
         <h2>牌桌</h2>
-        <p>${escapeHtml(describeGamePhase(game, seat))}</p>
+        <p>${escapeHtml(describeGamePhase(game, seat, room))}</p>
       </div>
       <div class="game-head-actions">
         <div class="pill-row">
@@ -472,7 +676,10 @@ function renderGamePanel() {
             <h3>${escapeHtml(opponent ? opponent.name : "等待中")}${renderScoreBadge(game, opponent ? opponent.seat : null)}</h3>
             <span>${opponent ? `手牌 ${opponentRoundState.hand.length} 張` : "尚未入座"}</span>
           </div>
-          ${renderOpponentRack(opponentRoundState.hand.length, opponentRoundState.melds)}
+          ${renderOpponentRack(opponentRoundState.hand.length, opponentRoundState.melds, {
+            revealHand: showOpponentHand,
+            handTiles: opponentRoundState.hand,
+          })}
         </section>
         <section class="table-center">
           <div class="center-block center-block-latest">
@@ -498,7 +705,7 @@ function renderGamePanel() {
           <div class="self-head-melds">
             ${renderMelds(selfRoundState.melds, { showEmpty: false, compact: true, singleLine: true })}
           </div>
-          <span class="self-head-status">${getSelfStatusText(clientState, game, seat)}</span>
+          <span class="self-head-status">${getSelfStatusText(clientState, game, seat, room)}</span>
         </div>
           ${renderSelfHand(selfRoundState.hand, clientState, drawReveal)}
         </section>
@@ -521,6 +728,7 @@ function renderSeatCard(player, currentPlayerId, hostPlayerId, game) {
   const badges = [
     player.id === hostPlayerId ? "房主" : "",
     player.id === currentPlayerId ? "你" : "",
+    player.type === "bot" ? "電腦" : "",
   ].filter(Boolean);
 
   return `
@@ -632,11 +840,12 @@ function renderResultHandGroup(label, tileIds = []) {
   `;
 }
 
-function renderOpponentRack(handCount, melds = []) {
+function renderOpponentRack(handCount, melds = [], options = {}) {
+  const { revealHand = false, handTiles = [] } = options;
   return `
     <div class="opponent-rack">
       ${renderMelds(melds, { showEmpty: false, compact: true, singleLine: true })}
-      ${renderHiddenHand(handCount, "hidden-hand-inline")}
+      ${revealHand ? renderVisibleHand(handTiles, "visible-hand-inline") : renderHiddenHand(handCount, "hidden-hand-inline")}
     </div>
   `;
 }
@@ -645,6 +854,11 @@ function renderHiddenHand(count, extraClass = "") {
   const backs = Array.from({ length: count }, () => "<div class=\"tile tile-back\"></div>").join("");
   const className = ["hidden-hand", extraClass].filter(Boolean).join(" ");
   return `<div class="${className}">${backs}</div>`;
+}
+
+function renderVisibleHand(tileIds = [], extraClass = "") {
+  const className = ["visible-hand", extraClass].filter(Boolean).join(" ");
+  return `<div class="${className}">${tileIds.map((tileId) => renderSingleTile(tileId, false)).join("")}</div>`;
 }
 
 function renderMelds(melds = [], options = {}) {
@@ -748,12 +962,16 @@ function renderSelfHand(hand, clientState, drawReveal) {
       ${
         drawReveal
           ? `
-            <div class="drawn-tile-slot">
+            <div class="drawn-tile-slot ${drawReveal.isGracePeriod ? "is-grace-period" : ""}">
               ${renderSingleTile(drawReveal.tileId, clientState.canDiscard, {
                 command: "discardTile",
                 tileId: drawReveal.tileId,
               })}
-              <span class="draw-countdown">${drawReveal.remainingSeconds}</span>
+              ${
+                drawReveal.countdownLabel
+                  ? `<span class="draw-countdown">${drawReveal.countdownLabel}</span>`
+                  : ""
+              }
             </div>
           `
           : ""
@@ -841,6 +1059,10 @@ function getPlayers(room) {
   return Object.values(room.players || {}).sort((left, right) => left.seat - right.seat);
 }
 
+function isSoloRoom(room) {
+  return Boolean(room && ((room.meta && room.meta.gameMode === GAME_MODE_SOLO) || room.gameMode === GAME_MODE_SOLO));
+}
+
 function getCurrentPlayer(room) {
   const { playerId } = controller.getIdentity();
   return getPlayers(room).find((player) => player.id === playerId);
@@ -912,16 +1134,19 @@ function getDrawRevealState(game, playerSeat, playerRoundState) {
   }
 
   const remainingMs = appState.drawRevealEndsAt - now;
-  if (remainingMs <= 0) {
+  if (remainingMs <= -DRAW_REVEAL_GRACE_MS) {
     appState.drawRevealCompletedKey = key;
     clearDrawRevealState();
     return null;
   }
 
-  scheduleCountdownRender(Math.min(remainingMs, 1000));
+  const visibleRemainingMs = Math.max(0, remainingMs);
+  scheduleCountdownRender(getNextDrawRevealRenderDelay(remainingMs));
+
   return {
     tileId: lastDraw.tileId,
-    remainingSeconds: Math.ceil(remainingMs / 1000),
+    countdownLabel: formatDrawRevealCountdown(visibleRemainingMs),
+    isGracePeriod: remainingMs <= 0,
   };
 }
 
@@ -942,7 +1167,34 @@ function scheduleCountdownRender(delay) {
   appState.countdownTimer = window.setTimeout(() => {
     appState.countdownTimer = 0;
     render();
-  }, delay);
+  }, Math.max(16, delay));
+}
+
+function getNextDrawRevealRenderDelay(remainingMs) {
+  if (remainingMs <= 0) {
+    return DRAW_REVEAL_GRACE_MS + remainingMs;
+  }
+
+  if (remainingMs > 1000) {
+    const currentSecond = Math.ceil(remainingMs / 1000);
+    return remainingMs - (currentSecond - 1) * 1000;
+  }
+
+  const currentTenth = Math.max(1, Math.floor(remainingMs / DRAW_REVEAL_FINAL_STEP_MS));
+  return remainingMs - (currentTenth * DRAW_REVEAL_FINAL_STEP_MS - 1);
+}
+
+function formatDrawRevealCountdown(remainingMs) {
+  if (remainingMs <= 0) {
+    return "";
+  }
+
+  if (remainingMs > 1000) {
+    return String(Math.ceil(remainingMs / 1000));
+  }
+
+  const tenths = Math.max(1, Math.floor(remainingMs / DRAW_REVEAL_FINAL_STEP_MS));
+  return (tenths / 10).toFixed(1);
 }
 
 function readCreateDrawRevealSeconds() {
@@ -994,7 +1246,7 @@ function getTurnBadge(game, playerSeat) {
   return game.turnSeat === playerSeat ? "輪到：你" : `輪到：${renderSeatLabel(game, game.turnSeat)}`;
 }
 
-function getSelfStatusText(clientState, game, playerSeat) {
+function getSelfStatusText(clientState, game, playerSeat, room = null) {
   if (clientState.canDiscard) {
     return "輪到你打牌";
   }
@@ -1003,6 +1255,9 @@ function getSelfStatusText(clientState, game, playerSeat) {
   }
   if (hasSelectableActions(clientState)) {
     return "請點選可用操作";
+  }
+  if (isSoloRoom(room) && room.meta && room.meta.botThinking) {
+    return "等待電腦思考";
   }
   if (game && game.status === "playing") {
     return game.turnSeat === playerSeat ? "輪到你操作" : "等待對手";
@@ -1046,45 +1301,56 @@ function getMeldLabel(type) {
   return type;
 }
 
-function describeGamePhase(game, playerSeat) {
+function describeGamePhase(game, playerSeat, room = null) {
   if (!game) {
-    return "房間已建立，等待開始對局。";
+    return isSoloRoom(room) ? "按下開始單人遊戲後即可直接對局。" : "房間已建立，等待開始對局。";
   }
 
   if (game.status === "waiting") {
-    return "兩位玩家都進房後，按下開始對局。";
+    return isSoloRoom(room) ? "單人模式準備中。" : "兩位玩家都進房後，按下開始對局。";
   }
 
   if (game.status === "finished") {
     return game && game.result && game.result.message ? game.result.message : "本局已結束，可以重新開局。";
   }
 
+  if (isSoloRoom(room) && room.meta && room.meta.botThinking) {
+    return "電腦思考中...";
+  }
+
   if (game.phase === "draw") {
-    return game.turnSeat === playerSeat ? "輪到你摸牌。" : "等待對手摸牌。";
+    return game.turnSeat === playerSeat ? "輪到你摸牌。" : isSoloRoom(room) ? "等待電腦摸牌。" : "等待對手摸牌。";
   }
 
   if (game.phase === "discard") {
     return game.turnSeat === playerSeat
       ? "輪到你出牌，請點一張手牌。"
-      : "等待對手出牌。";
+      : isSoloRoom(room)
+        ? "等待電腦出牌。"
+        : "等待對手出牌。";
   }
 
   if (game.phase === "response") {
     return game.pendingClaim && game.pendingClaim.toSeat === playerSeat
       ? "你可以對這張牌進行吃、碰、槓或胡。"
-      : "等待對手回應。";
+      : isSoloRoom(room)
+        ? "等待電腦回應。"
+        : "等待對手回應。";
   }
 
   if (game.phase === "robKong") {
     return game.pendingClaim && game.pendingClaim.toSeat === playerSeat
       ? "你可以搶槓胡。"
-      : "等待搶槓胡回應。";
+      : isSoloRoom(room)
+        ? "等待電腦決定是否搶槓。"
+        : "等待搶槓胡回應。";
   }
 
   return "對局進行中。";
 }
 
 function updatePageMode() {
+  document.body.classList.toggle("app-solo-mode", appState.selectedMode === GAME_MODE_SOLO);
   document.body.classList.toggle("app-game-focus", isGameFocused());
   document.body.classList.toggle("app-native-fullscreen", isFullscreenActive());
 }
@@ -1193,6 +1459,26 @@ function stripUndefined(value) {
     }
     return result;
   }, {});
+}
+
+function normalizeGameMode(value) {
+  return value === GAME_MODE_SOLO ? GAME_MODE_SOLO : GAME_MODE_ONLINE;
+}
+
+function readLocalSetting(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeLocalSetting(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (error) {
+    // Ignore Safari private mode write failures.
+  }
 }
 
 function getTileDisplayName(tileType) {

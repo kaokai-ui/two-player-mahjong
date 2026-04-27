@@ -13,7 +13,7 @@
       content="可部署到 GitHub Pages 的雙人 13 張麻將 Web UI，支援 iPad 連線對戰與 Firebase 房間同步。"
     />
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./styles.css?v=20260427c" />
+    <link rel="stylesheet" href="./styles.css?v=20260427k" />
     <script>
       (function () {
         var root =
@@ -79,6 +79,13 @@
             <span>玩家名稱</span>
             <input id="player-name-input" type="text" maxlength="16" placeholder="請輸入你的名字" />
           </label>
+          <label class="field">
+            <span>遊戲模式</span>
+            <select id="game-mode-select">
+              <option value="online">雙人連線</option>
+              <option value="solo-bot">單人對電腦</option>
+            </select>
+          </label>
           <div id="firebase-status"></div>
         </div>
       </header>
@@ -89,16 +96,16 @@
         <section class="panel lobby-panel">
           <div class="panel-head">
             <div>
-              <h2>建立或加入房間</h2>
-              <p>建立新房後，把房號分享給另一位玩家；雙方都加入後就可以開始對局。</p>
+              <h2 id="lobby-title">建立或加入房間</h2>
+              <p id="lobby-description">建立新房後，把房號分享給另一位玩家；雙方都加入後就可以開始對局。</p>
             </div>
           </div>
 
           <div class="lobby-grid">
             <form id="create-room-form" class="lobby-card">
-              <h3>建立房間</h3>
+              <h3 id="create-room-title">建立房間</h3>
 
-              <label class="field">
+              <label id="create-room-code-field" class="field">
                 <span>房號</span>
                 <div class="inline-field">
                   <input id="create-room-code-input" type="text" maxlength="8" placeholder="輸入或產生房號" />
@@ -114,7 +121,16 @@
                 </select>
               </label>
 
-              <button class="primary-button" type="button" data-submit-action="create-room">建立房間</button>
+              <label id="create-solo-difficulty-field" class="field" hidden>
+                <span>電腦難度</span>
+                <select id="create-solo-difficulty-select">
+                  <option value="easy" selected>簡單</option>
+                  <option value="normal">普通</option>
+                  <option value="hard">困難</option>
+                </select>
+              </label>
+
+              <button id="create-room-submit-button" class="primary-button" type="button" data-submit-action="create-room">建立房間</button>
               <label class="field">
                 <span>摸牌倒數</span>
                 <select id="create-draw-reveal-seconds-select">
@@ -199,7 +215,7 @@
       })();
     </script>
     <script type="module">
-      const version = "20260427c";
+      const version = "20260427k";
 
       function shouldLoadLocalOverride() {
         const { protocol, hostname } = window.location;

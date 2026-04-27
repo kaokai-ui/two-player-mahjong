@@ -118,7 +118,7 @@ export function createStartedGame(rulesetId, previousGame, options = {}) {
   players[0].hand = sortTileIds(players[0].hand);
   players[1].hand = sortTileIds(players[1].hand);
 
-  const dealerSeat = 0;
+  const dealerSeat = resolveNextDealerSeat(previousGame);
   const dealerDraw = deck.shift();
   players[dealerSeat].hand = sortTileIds([...players[dealerSeat].hand, dealerDraw]);
   const scores = normalizeScores(previousGame && previousGame.scores);
@@ -149,6 +149,18 @@ export function createStartedGame(rulesetId, previousGame, options = {}) {
       initial: true,
     },
   };
+}
+
+function resolveNextDealerSeat(previousGame) {
+  if (previousGame && typeof previousGame.winnerSeat === "number") {
+    return previousGame.winnerSeat;
+  }
+
+  if (previousGame && typeof previousGame.dealerSeat === "number") {
+    return previousGame.dealerSeat;
+  }
+
+  return 0;
 }
 
 export function applyGameCommand(gameState, command) {

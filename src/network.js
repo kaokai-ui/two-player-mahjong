@@ -21,7 +21,7 @@ import {
   createStartedGame,
   createWaitingGame,
   normalizeGameState,
-} from "./game.js?v=20260426c";
+} from "./game.js?v=20260427g";
 import { DEFAULT_RULESET } from "./rules.js?v=20260425i";
 import {
   firebaseAppCheckConfig,
@@ -171,6 +171,7 @@ export class NetworkController {
         roomId: normalizedRoomId,
         hostPlayerId: identity.playerId,
         hostBrowserId: identity.browserId,
+        godViewEnabled: false,
         rulesetId,
         createdAt: now,
         updatedAt: now,
@@ -950,6 +951,7 @@ function normalizeRoomMeta(meta) {
     roomId: meta.roomId || "",
     hostPlayerId: meta.hostPlayerId || "",
     hostBrowserId: meta.hostBrowserId || "",
+    godViewEnabled: Boolean(meta.godViewEnabled),
     rulesetId: meta.rulesetId || DEFAULT_RULESET,
     createdAt: typeof meta.createdAt === "number" ? meta.createdAt : 0,
     updatedAt: typeof meta.updatedAt === "number" ? meta.updatedAt : 0,
