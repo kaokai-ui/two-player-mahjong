@@ -690,31 +690,36 @@ function renderCenterDiscards({ selfName, opponentName, selfDiscards, opponentDi
     <div class="center-block center-block-discards">
       <span class="center-label">打出的牌</span>
       <div class="center-discard-board">
-        ${renderCenterDiscardRow(opponentName, opponentDiscards)}
-        ${renderCenterDiscardRow(selfName, selfDiscards)}
+        <div class="center-discard-viewport">
+          <div class="center-discard-content">
+            ${renderCenterDiscardRow(opponentName, opponentDiscards)}
+            ${renderCenterDiscardRow(selfName, selfDiscards)}
+          </div>
+        </div>
       </div>
     </div>
   `;
 }
 
 function renderCenterDiscardRow(label, discards = []) {
+  const discardMarkup = discards.length
+    ? [...discards]
+        .reverse()
+        .map(
+          (discard) => `
+            <div class="discard-item ${discard.claimed ? "discard-claimed" : ""}">
+              ${renderSingleTile(discard.tileId, false)}
+            </div>
+          `,
+        )
+        .join("")
+    : `<span class="placeholder">尚未打牌</span>`;
+
   return `
     <div class="center-discard-row">
       <span class="discard-row-label">${escapeHtml(label)}</span>
-      <div class="discard-strip">
-        ${
-          discards.length
-            ? discards
-                .map(
-                  (discard) => `
-                    <div class="discard-item ${discard.claimed ? "discard-claimed" : ""}">
-                      ${renderSingleTile(discard.tileId, false)}
-                    </div>
-                  `,
-                )
-                .join("")
-            : `<span class="placeholder">尚未打牌</span>`
-        }
+      <div class="discard-line">
+        ${discardMarkup}
       </div>
     </div>
   `;
@@ -996,6 +1001,9 @@ function getSelfStatusText(clientState, game, playerSeat) {
   if (clientState.canDraw) {
     return "輪到你摸牌";
   }
+  if (hasSelectableActions(clientState)) {
+    return "請點選可用操作";
+  }
   if (game && game.status === "playing") {
     return game.turnSeat === playerSeat ? "輪到你操作" : "等待對手";
   }
@@ -1010,6 +1018,19 @@ function getIdleActionText(clientState) {
     return "請點一張牌打出";
   }
   return "等待對手操作";
+}
+
+function hasSelectableActions(clientState) {
+  if (!clientState) {
+    return false;
+  }
+
+  return Boolean(
+    clientState.canSelfDraw ||
+      (Array.isArray(clientState.concealedKongs) && clientState.concealedKongs.length) ||
+      (Array.isArray(clientState.addedKongs) && clientState.addedKongs.length) ||
+      (Array.isArray(clientState.claimOptions) && clientState.claimOptions.length),
+  );
 }
 
 function getMeldLabel(type) {

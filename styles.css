@@ -462,7 +462,7 @@ body.app-game-focus #game-panel.panel {
 body.app-game-focus .table-shell {
   min-height: calc(100dvh - 118px);
   grid-template-columns: 1fr;
-  grid-template-rows: minmax(126px, auto) 160px minmax(300px, auto);
+  grid-template-rows: minmax(126px, auto) 172px minmax(300px, auto);
   gap: 10px;
   align-items: stretch;
 }
@@ -864,7 +864,7 @@ body.app-game-focus .table-self .meld-strip .tile-faceup {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
   grid-template-columns: minmax(120px, 0.44fr) minmax(0, 1fr) minmax(180px, 0.75fr);
   align-items: stretch;
-  height: 160px;
+  height: 184px;
   overflow: hidden;
 }
 
@@ -873,8 +873,8 @@ body.app-game-focus .table-center {
   grid-template-rows: 1fr;
   gap: 8px;
   align-items: stretch;
-  height: 160px;
-  max-height: 160px;
+  height: 184px;
+  max-height: 184px;
   overflow: hidden;
 }
 
@@ -946,18 +946,51 @@ body.app-game-focus .log-card {
 
 .center-discard-board {
   display: grid;
-  grid-template-rows: 1fr 1fr;
-  gap: 6px;
+  height: 100%;
   min-height: 0;
   overflow: hidden;
 }
 
+.center-block-discards {
+  grid-template-rows: auto minmax(0, 1fr);
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+.center-discard-viewport {
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  min-height: 100%;
+  height: 100%;
+  padding-top: 1px;
+  padding-bottom: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(23, 32, 29, 0.24) transparent;
+}
+
+.center-discard-viewport::-webkit-scrollbar {
+  height: 8px;
+}
+
+.center-discard-viewport::-webkit-scrollbar-thumb {
+  background: rgba(23, 32, 29, 0.24);
+  border-radius: 999px;
+}
+
+.center-discard-content {
+  min-width: fit-content;
+  display: grid;
+  gap: 4px;
+  align-content: start;
+}
+
 .center-discard-row {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
-  gap: 6px;
-  align-items: center;
-  min-width: 0;
+  grid-template-columns: 66px minmax(0, max-content);
+  gap: 4px;
+  align-items: start;
+  min-width: fit-content;
   min-height: 0;
 }
 
@@ -970,13 +1003,12 @@ body.app-game-focus .log-card {
   text-overflow: ellipsis;
 }
 
-.center-discard-row .discard-strip {
-  flex-wrap: nowrap;
+.center-discard-row .discard-line {
+  display: flex;
   gap: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  min-width: 0;
-  padding-bottom: 2px;
+  flex-wrap: nowrap;
+  min-width: fit-content;
+  align-items: flex-start;
 }
 
 .center-discard-board .tile-faceup,
