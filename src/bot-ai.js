@@ -51,6 +51,8 @@ const DIFFICULTY_PROFILES = {
     lookaheadActivationGap: 0,
     lookaheadMaxShanten: 0,
     guaranteedLookaheadShanten: 0,
+    taiWeight: 0,
+    projectedScoreWeight: 0,
   },
   normal: {
     id: "normal",
@@ -66,24 +68,28 @@ const DIFFICULTY_PROFILES = {
     lookaheadActivationGap: 0,
     lookaheadMaxShanten: 0,
     guaranteedLookaheadShanten: 0,
+    taiWeight: 0,
+    projectedScoreWeight: 0,
   },
   hard: {
     id: "hard",
     structured: false,
     advanced: true,
     lookahead: false,
-    actionThreshold: 10,
-    attackFactor: 1.05,
-    riskMultiplier: 0.92,
+    actionThreshold: 7,
+    attackFactor: 1.07,
+    riskMultiplier: 0.9,
     lookaheadWeight: 0,
     lookaheadCandidateLimit: 0,
     lookaheadDrawLimit: 0,
     lookaheadActivationGap: 0,
     lookaheadMaxShanten: 0,
     guaranteedLookaheadShanten: 0,
-    scoringWeight: 0.48,
-    scoreGapWeight: 0.12,
-    exposurePenaltyScale: 20,
+    scoringWeight: 0.28,
+    scoreGapWeight: 0.1,
+    exposurePenaltyScale: 18,
+    taiWeight: 8,
+    projectedScoreWeight: 0.08,
   },
   god: {
     id: "god",
@@ -102,6 +108,8 @@ const DIFFICULTY_PROFILES = {
     scoringWeight: 1.12,
     scoreGapWeight: 0.28,
     exposurePenaltyScale: 30,
+    taiWeight: 26,
+    projectedScoreWeight: 0.28,
   },
 };
 
@@ -969,8 +977,8 @@ function shouldTakeAdvancedAction(baseline, candidate, battleProfile, profile) {
   }
 
   if (scoringMode && progress.shanten === baseline.shanten) {
-    const taiLossTolerance = profile.id === "god" ? 0.45 : 0.9;
-    const openTaiLossTolerance = profile.id === "god" ? 0.25 : 0.6;
+    const taiLossTolerance = profile.id === "god" ? 0.45 : 1.75;
+    const openTaiLossTolerance = profile.id === "god" ? 0.25 : 1.25;
     if (progressProjectedTai + taiLossTolerance < baselineProjectedTai && candidate.lookaheadBonus < 18) {
       return false;
     }
@@ -1021,12 +1029,14 @@ function evaluateActionEV({
   const exposurePenaltyScale = scoringMode
     ? profile.exposurePenaltyScale || 24
     : 18;
+  const taiWeight = scoringMode ? profile.taiWeight ?? 22 : 0;
+  const projectedScoreWeight = scoringMode ? profile.projectedScoreWeight ?? 0.22 : 0;
 
   return (
     progressDelta * attackFactor +
     scoringDelta * scoreGapWeight * battleProfile.attackWeight +
-    taiDelta * (scoringMode ? 22 : 0) * battleProfile.attackWeight +
-    projectedScoreDelta * (scoringMode ? 0.22 : 0) * battleProfile.attackWeight +
+    taiDelta * taiWeight * battleProfile.attackWeight +
+    projectedScoreDelta * projectedScoreWeight * battleProfile.attackWeight +
     actionBonus +
     discardBias * 2 -
     discardRisk * battleProfile.defenseWeight * riskMultiplier -
