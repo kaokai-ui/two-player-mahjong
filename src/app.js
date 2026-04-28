@@ -680,12 +680,13 @@ function renderGamePanel() {
         <h2>牌桌</h2>
         <p>${escapeHtml(describeGamePhase(game, seat, room))}</p>
       </div>
-      <div class="game-head-actions">
-        <div class="pill-row">
-          <span class="pill">你的位置：${renderSeatLabel(game, seat)}</span>
-          <span class="pill">莊家：${renderSeatLabel(game, game ? game.dealerSeat : null)}</span>
-          <span class="pill">${getTurnBadge(game, seat)}</span>
-        </div>
+        <div class="game-head-actions">
+          <div class="pill-row">
+            <span class="pill">你的位置：${renderSeatLabel(game, seat)}</span>
+            <span class="pill">莊家：${renderSeatLabel(game, game ? game.dealerSeat : null)}</span>
+            <span class="pill">${getTurnBadge(game, seat)}</span>
+            ${isScoringEnabled(game) ? '<span class="pill">統計：胡牌數（分數）</span>' : ""}
+          </div>
         <span class="focus-note">${focusStatus}</span>
         <button class="ghost-button focus-toggle" type="button" data-ui-action="toggle-fullscreen">${fullscreenLabel}</button>
       </div>
@@ -1446,6 +1447,7 @@ function renderRoomPanel() {
           ${isSoloMode ? `<span class="pill">難度：${escapeHtml(SOLO_DIFFICULTY_LABELS[room.meta && room.meta.soloDifficulty] || SOLO_DIFFICULTY_LABELS[DEFAULT_SOLO_DIFFICULTY])}</span>` : ""}
           <span class="pill">規則：${escapeHtml(currentRuleset.name)}</span>
           <span class="pill">台數計算：${scoringStatus}</span>
+          ${isScoringEnabled(game) ? '<span class="pill">統計：胡牌數（分數）</span>' : ""}
           <span class="pill">第 ${game && game.roundNumber != null ? game.roundNumber : 0} 局</span>
           <span class="pill">牌牆：${game && game.wall ? game.wall.length : 0}</span>
           <span class="pill">莊家：${renderSeatLabel(game, game ? game.dealerSeat : null)}</span>
@@ -1671,8 +1673,10 @@ function renderScoreBadge(game, seat) {
     return "";
   }
 
-  const pointText = scoringEnabled ? ` (${formatPointScore(getSeatPointScore(game, seat))})` : "";
-  return `<span class="score-badge">+${wins}${pointText}</span>`;
+  const score = getSeatPointScore(game, seat);
+  const pointText = scoringEnabled ? ` (${formatPointScore(score)})` : "";
+  const label = scoringEnabled ? `胡牌數 ${wins}，累積分數 ${formatPointScore(score)}` : `胡牌數 ${wins}`;
+  return `<span class="score-badge" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">+${wins}${pointText}</span>`;
 }
 
 function getSeatWinCount(game, seat) {
