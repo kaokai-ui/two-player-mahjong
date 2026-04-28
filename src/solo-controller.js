@@ -5,14 +5,15 @@ import {
   createWaitingGame,
   normalizeDrawRevealSeconds,
   normalizeGameState,
-} from "./game.js?v=20260427g";
+} from "./game.js?v=20260428c";
 import { DEFAULT_RULESET } from "./rules.js?v=20260425i";
+import { DEFAULT_SCORING_ENABLED, normalizeScoringEnabled } from "./scoring.js?v=20260428c";
 import {
   DEFAULT_SOLO_DIFFICULTY,
   SOLO_DIFFICULTY_LABELS,
   decideBotAction,
   normalizeSoloDifficulty,
-} from "./bot-ai.js?v=20260427l";
+} from "./bot-ai.js?v=20260428c";
 
 const PLAYER_NAME_KEY = "mahjong-player-name";
 const SOLO_DIFFICULTY_STORAGE_KEY = "mahjong-solo-difficulty";
@@ -81,17 +82,25 @@ export class SoloController {
     rulesetId = DEFAULT_RULESET,
     drawRevealSeconds = DEFAULT_DRAW_REVEAL_SECONDS,
     difficulty = DEFAULT_SOLO_DIFFICULTY,
+    scoringEnabled = DEFAULT_SCORING_ENABLED,
   }) {
     this.clearBotTimer();
 
     const trimmedName = this.setPlayerName(playerName);
     const normalizedDifficulty = normalizeSoloDifficulty(difficulty);
     const normalizedDrawRevealSeconds = normalizeDrawRevealSeconds(drawRevealSeconds);
+    const normalizedScoringEnabled = normalizeScoringEnabled(scoringEnabled);
     writeStorage(SOLO_DIFFICULTY_STORAGE_KEY, normalizedDifficulty);
 
     const now = Date.now();
-    const waitingGame = createWaitingGame(rulesetId, { drawRevealSeconds: normalizedDrawRevealSeconds });
-    const startedGame = createStartedGame(rulesetId, waitingGame, { drawRevealSeconds: normalizedDrawRevealSeconds });
+    const waitingGame = createWaitingGame(rulesetId, {
+      drawRevealSeconds: normalizedDrawRevealSeconds,
+      scoringEnabled: normalizedScoringEnabled,
+    });
+    const startedGame = createStartedGame(rulesetId, waitingGame, {
+      drawRevealSeconds: normalizedDrawRevealSeconds,
+      scoringEnabled: normalizedScoringEnabled,
+    });
 
     this.room = createSoloRoom({
       humanName: trimmedName,
@@ -99,6 +108,7 @@ export class SoloController {
       updatedAt: now,
       rulesetId,
       difficulty: normalizedDifficulty,
+      scoringEnabled: normalizedScoringEnabled,
       game: startedGame,
       botThinking: false,
     });
@@ -220,6 +230,11 @@ export class SoloController {
       updatedAt,
       rulesetId: game.rulesetId || this.room.rulesetId,
       difficulty: this.room.meta.soloDifficulty,
+      scoringEnabled: normalizeScoringEnabled(
+        game && Object.prototype.hasOwnProperty.call(game, "scoringEnabled")
+          ? game.scoringEnabled
+          : this.room.meta.scoringEnabled,
+      ),
       game,
       botThinking: false,
     });
@@ -263,6 +278,7 @@ function createSoloRoom({
   updatedAt,
   rulesetId,
   difficulty,
+  scoringEnabled,
   game,
   botThinking,
 }) {
@@ -323,6 +339,7 @@ function createSoloRoom({
       },
       gameMode: "solo-bot",
       soloDifficulty: normalizeSoloDifficulty(difficulty),
+      scoringEnabled: normalizeScoringEnabled(scoringEnabled),
       botThinking: Boolean(botThinking),
     },
   };

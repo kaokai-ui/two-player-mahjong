@@ -1,7 +1,8 @@
-import { DEFAULT_DRAW_REVEAL_SECONDS, getPlayerClientState } from "./game.js?v=20260427g";
-import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260427g";
+import { DEFAULT_DRAW_REVEAL_SECONDS, getPlayerClientState } from "./game.js?v=20260428c";
+import { createRandomRoomId, NetworkController, normalizeRoomId } from "./network.js?v=20260428c";
 import { DEFAULT_RULESET, getRuleset, getTileType, sortTileIds } from "./rules.js?v=20260425i";
-import { DEFAULT_SOLO_DIFFICULTY, SOLO_DIFFICULTY_LABELS, SoloController, normalizeSoloDifficulty } from "./solo-controller.js?v=20260427l";
+import { DEFAULT_SCORING_ENABLED, normalizeScoringEnabled } from "./scoring.js?v=20260428c";
+import { DEFAULT_SOLO_DIFFICULTY, SOLO_DIFFICULTY_LABELS, SoloController, normalizeSoloDifficulty } from "./solo-controller.js?v=20260428c";
 import { getTileSvgMarkup } from "./tile-art.js?v=20260425z";
 
 const elements = {
@@ -21,6 +22,7 @@ const elements = {
   createSoloDifficultyField: document.querySelector("#create-solo-difficulty-field"),
   createSoloDifficultySelect: document.querySelector("#create-solo-difficulty-select"),
   createDrawRevealSecondsSelect: document.querySelector("#create-draw-reveal-seconds-select"),
+  createScoringEnabledSelect: document.querySelector("#create-scoring-enabled-select"),
   createRoomSubmitButton: document.querySelector("#create-room-submit-button"),
   createRoomButton: document.querySelector('[data-submit-action="create-room"]'),
   joinRoomButton: document.querySelector('[data-submit-action="join-room"]'),
@@ -32,8 +34,11 @@ const elements = {
 
 const GAME_MODE_STORAGE_KEY = "mahjong-game-mode";
 const SOLO_DIFFICULTY_STORAGE_KEY = "mahjong-solo-difficulty";
+const SCORING_ENABLED_STORAGE_KEY = "mahjong-scoring-enabled";
+const DEFAULTS_VERSION_STORAGE_KEY = "mahjong-defaults-version";
 const GAME_MODE_ONLINE = "online";
 const GAME_MODE_SOLO = "solo-bot";
+const DEFAULTS_VERSION = "20260428-solo-hard-scoring-on";
 const DRAW_REVEAL_FINAL_STEP_MS = 100;
 const DRAW_REVEAL_GRACE_MS = 350;
 
@@ -47,8 +52,9 @@ const appState = {
   drawRevealEndsAt: 0,
   countdownTimer: 0,
   autoDrawKey: "",
-  selectedMode: GAME_MODE_ONLINE,
+  selectedMode: GAME_MODE_SOLO,
   selectedSoloDifficulty: DEFAULT_SOLO_DIFFICULTY,
+  selectedScoringEnabled: DEFAULT_SCORING_ENABLED,
 };
 
 const TILE_NUMBER_LABELS = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
@@ -72,9 +78,12 @@ const TILE_GLYPHS = {
 };
 
 const queryRoom = new URL(window.location.href).searchParams.get("room");
-const storedMode = readLocalSetting(GAME_MODE_STORAGE_KEY) || GAME_MODE_ONLINE;
+applyDefaultSettingsMigration();
+
+const storedMode = readLocalSetting(GAME_MODE_STORAGE_KEY) || GAME_MODE_SOLO;
 appState.selectedMode = queryRoom ? GAME_MODE_ONLINE : normalizeGameMode(storedMode);
 appState.selectedSoloDifficulty = normalizeSoloDifficulty(readLocalSetting(SOLO_DIFFICULTY_STORAGE_KEY));
+appState.selectedScoringEnabled = normalizeScoringEnabled(readLocalSetting(SCORING_ENABLED_STORAGE_KEY));
 
 let controller = null;
 let controllerInitToken = 0;
@@ -85,6 +94,7 @@ if (queryRoom) {
 
 elements.gameModeSelect.value = appState.selectedMode;
 elements.createSoloDifficultySelect.value = appState.selectedSoloDifficulty;
+elements.createScoringEnabledSelect.value = String(appState.selectedScoringEnabled);
 syncModeSpecificInputs();
 
 document.addEventListener("fullscreenchange", render);
@@ -128,6 +138,12 @@ elements.gameModeSelect.addEventListener("change", async () => {
 elements.createSoloDifficultySelect.addEventListener("change", () => {
   appState.selectedSoloDifficulty = normalizeSoloDifficulty(elements.createSoloDifficultySelect.value);
   writeLocalSetting(SOLO_DIFFICULTY_STORAGE_KEY, appState.selectedSoloDifficulty);
+  render();
+});
+
+elements.createScoringEnabledSelect.addEventListener("change", () => {
+  appState.selectedScoringEnabled = normalizeScoringEnabled(elements.createScoringEnabledSelect.value);
+  writeLocalSetting(SCORING_ENABLED_STORAGE_KEY, String(appState.selectedScoringEnabled));
   render();
 });
 
@@ -332,6 +348,7 @@ async function handleCreateRoomSubmit() {
         rulesetId: elements.createRulesetSelect.value || DEFAULT_RULESET,
         drawRevealSeconds: readCreateDrawRevealSeconds(),
         difficulty: appState.selectedSoloDifficulty,
+        scoringEnabled: readCreateScoringEnabled(),
       });
       appState.message = "已開始單人對局。";
       appState.lastLobbyAction = "";
@@ -345,6 +362,7 @@ async function handleCreateRoomSubmit() {
       playerName: elements.playerNameInput.value,
       rulesetId: elements.createRulesetSelect.value || DEFAULT_RULESET,
       drawRevealSeconds: readCreateDrawRevealSeconds(),
+      scoringEnabled: readCreateScoringEnabled(),
     });
     appState.message = "已建立房間。";
     appState.lastLobbyAction = "";
@@ -450,7 +468,10 @@ function renderBanner() {
     appState.room.lastError.playerId === (currentPlayer ? currentPlayer.id : "")
       ? appState.room.lastError.message
       : "";
-  const messages = [appState.error, roomScopedError, appState.message].filter(Boolean);
+  const hasResultOverlay = Boolean(appState.room && appState.room.game && appState.room.game.result);
+  const messages = hasResultOverlay
+    ? [appState.error, roomScopedError].filter(Boolean)
+    : [appState.error, roomScopedError, appState.message].filter(Boolean);
 
   elements.noticeBanner.innerHTML = messages.length
     ? `<div class="banner ${appState.error ? "banner-error" : "banner-info"}">${escapeHtml(messages[0])}</div>`
@@ -536,7 +557,7 @@ function renderFirebaseStatus() {
   `;
 }
 
-function renderRoomPanel() {
+function renderRoomPanelLegacy() {
   const room = appState.room;
   if (!room) {
     elements.roomPanel.innerHTML = `
@@ -742,7 +763,7 @@ function renderSeatCard(player, currentPlayerId, hostPlayerId, game) {
   `;
 }
 
-function renderResultOverlay(game, players) {
+function renderResultOverlayLegacy(game, players) {
   if (!game || !game.result) {
     return "";
   }
@@ -792,7 +813,7 @@ function renderResultOverlay(game, players) {
   `;
 }
 
-function renderResultHand(game) {
+function renderResultHandLegacy(game) {
   const result = game && game.result ? game.result : null;
   if (!result || typeof result.winnerSeat !== "number") {
     return "";
@@ -1203,6 +1224,12 @@ function readCreateDrawRevealSeconds() {
   );
 }
 
+function readCreateScoringEnabled() {
+  return normalizeScoringEnabled(
+    elements.createScoringEnabledSelect ? elements.createScoringEnabledSelect.value : DEFAULT_SCORING_ENABLED,
+  );
+}
+
 function normalizeDrawRevealSecondsValue(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
@@ -1221,16 +1248,16 @@ function formatSeat(seat) {
   return typeof seat === "number" ? `P${seat + 1}` : "-";
 }
 
-function renderSeatLabel(game, seat) {
+function renderSeatLabelLegacy(game, seat) {
   return `${formatSeat(seat)}${renderScoreBadge(game, seat)}`;
 }
 
-function renderScoreBadge(game, seat) {
+function renderScoreBadgeLegacy(game, seat) {
   const score = getSeatScore(game, seat);
   return score > 0 ? `<span class="score-badge">+${score}</span>` : "";
 }
 
-function getSeatScore(game, seat) {
+function getSeatScoreLegacy(game, seat) {
   if (!game || !Array.isArray(game.scores) || typeof seat !== "number") {
     return 0;
   }
@@ -1349,6 +1376,328 @@ function describeGamePhase(game, playerSeat, room = null) {
   return "對局進行中。";
 }
 
+function renderRoomPanel() {
+  const room = appState.room;
+  if (!room) {
+    elements.roomPanel.innerHTML = `
+      <div class="panel-head">
+        <h2>${appState.selectedMode === GAME_MODE_SOLO ? "單人設定" : "房間資訊"}</h2>
+        <p>${appState.selectedMode === GAME_MODE_SOLO ? "選好規則、難度與台數計算後，即可開始單人對電腦。" : "建立房間或加入房間後，這裡會顯示目前對局資訊。"}</p>
+      </div>
+      <div class="empty-state">
+        <p>${appState.selectedMode === GAME_MODE_SOLO ? "開始單人遊戲後，這裡會顯示目前對局狀態。" : "建立或加入房間後，這裡會顯示目前房間狀態。"}</p>
+      </div>
+    `;
+    return;
+  }
+
+  const players = getPlayers(room);
+  const currentPlayer = getCurrentPlayer(room);
+  const isHost = controller.isHost();
+  const game = room.game || null;
+  const isSoloMode = isSoloRoom(room);
+  const canStart = players.length === 2 && (!game || game.status !== "playing");
+  const currentRuleset = getRuleset(room.rulesetId || (game && game.rulesetId) || DEFAULT_RULESET);
+  const startLabel = game && game.status === "finished" ? "重新開始" : "開始對局";
+  const currentPlayerId = currentPlayer ? currentPlayer.id : "";
+  const currentPlayerSeat = currentPlayer ? currentPlayer.seat : 0;
+  const scoringStatus = isScoringEnabled(game) ? "開啟" : "關閉";
+
+  elements.roomPanel.innerHTML = `
+    <div class="panel-head">
+      <div>
+        <h2>${isSoloMode ? "單人對局" : `房間 ${escapeHtml(room.roomId)}`}</h2>
+        <p>${escapeHtml(currentRuleset.description)}</p>
+      </div>
+      <div class="room-actions">
+        ${isSoloMode ? "" : `<button class="ghost-button" data-room-action="copy-link">複製邀請連結</button>`}
+        ${
+          !isSoloMode && isHost
+            ? `
+              <label class="field room-inline-field">
+                <span>規則</span>
+                <select id="room-ruleset-select">
+                  <option value="full136" ${currentRuleset.id === "full136" ? "selected" : ""}>雙人全牌 136 張</option>
+                  <option value="classic64" ${currentRuleset.id === "classic64" ? "selected" : ""}>雙人精簡 64 張</option>
+                </select>
+              </label>
+              <button class="primary-button" data-room-action="start-game" ${canStart ? "" : "disabled"}>${escapeHtml(startLabel)}</button>
+            `
+            : ""
+        }
+      </div>
+    </div>
+    <div class="room-grid">
+      <div class="room-card">
+        <h3>玩家</h3>
+        <div class="seat-list">
+          ${[0, 1]
+            .map((seat) =>
+              renderSeatCard(players.find((player) => player.seat === seat), currentPlayerId, room.hostPlayerId, game),
+            )
+            .join("")}
+        </div>
+      </div>
+      <div class="room-card">
+        <h3>對局資訊</h3>
+        <p class="phase-copy">${escapeHtml(describeGamePhase(game, currentPlayerSeat, room))}</p>
+        <div class="pill-row">
+          ${isSoloMode ? `<span class="pill">模式：單人對電腦</span>` : ""}
+          ${isSoloMode ? `<span class="pill">難度：${escapeHtml(SOLO_DIFFICULTY_LABELS[room.meta && room.meta.soloDifficulty] || SOLO_DIFFICULTY_LABELS[DEFAULT_SOLO_DIFFICULTY])}</span>` : ""}
+          <span class="pill">規則：${escapeHtml(currentRuleset.name)}</span>
+          <span class="pill">台數計算：${scoringStatus}</span>
+          <span class="pill">第 ${game && game.roundNumber != null ? game.roundNumber : 0} 局</span>
+          <span class="pill">牌牆：${game && game.wall ? game.wall.length : 0}</span>
+          <span class="pill">莊家：${renderSeatLabel(game, game ? game.dealerSeat : null)}</span>
+          <span class="pill">輪到：${renderSeatLabel(game, game ? game.turnSeat : null)}</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderResultOverlayLegacyScoring(game, players) {
+  if (!game || !game.result) {
+    return "";
+  }
+
+  const isDraw = game.result.winKind === "draw";
+  const winKindLabel =
+    game.result.winKind === "selfDraw"
+      ? "自摸"
+      : game.result.winKind === "robKong"
+        ? "搶槓胡"
+        : "胡牌";
+  const winnerName = getPlayerDisplayName(players, game.result.winnerSeat);
+  const patternText = ((game.result.patterns || []).join("、")) || "未記錄牌型";
+  const detail = isDraw ? game.result.message || "本局流局。" : `牌型：${patternText}`;
+  const winningTile = !isDraw && game.result.winningTileId ? renderSingleTile(game.result.winningTileId, false) : "";
+  const fullHand = !isDraw ? renderResultHand(game) : "";
+  const scoringSummary = !isDraw ? renderResultScoring(game.result) : "";
+
+  return `
+    <div class="result-overlay">
+      <div class="result-overlay-backdrop"></div>
+      <div class="result-card">
+        <span class="result-eyebrow">${isDraw ? "對局結果" : "胡牌結果"}</span>
+        ${
+          isDraw
+            ? `<h3 class="result-title">流局</h3>`
+            : `
+              <div class="result-kind">${winKindLabel}</div>
+              <h3 class="result-title">${escapeHtml(winnerName)}</h3>
+            `
+        }
+        ${
+          winningTile
+            ? `
+              <div class="result-winning-tile">
+                ${winningTile}
+              </div>
+            `
+            : ""
+        }
+        ${fullHand}
+        ${scoringSummary}
+        <p class="result-patterns">${escapeHtml(detail)}</p>
+        <div class="result-actions result-actions-centered">
+          <button class="primary-button result-action-button" type="button" data-command="restartGame">繼續遊戲</button>
+          <button class="ghost-button result-action-button" type="button" data-ui-action="leave-room">離開遊戲</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderResultOverlay(game, players) {
+  if (!game || !game.result) {
+    return "";
+  }
+
+  const isDraw = game.result.winKind === "draw";
+  const winKindLabel =
+    game.result.winKind === "selfDraw"
+      ? "自摸"
+      : game.result.winKind === "robKong"
+        ? "搶槓"
+        : "胡牌";
+  const winnerName = getPlayerDisplayName(players, game.result.winnerSeat);
+  const patternText = getResultPatternText(game.result);
+  const detail = isDraw ? game.result.message || "本局流局。" : `牌型：${patternText}`;
+  const winningTile = !isDraw && game.result.winningTileId ? renderSingleTile(game.result.winningTileId, false) : "";
+  const fullHand = !isDraw ? renderResultHand(game) : "";
+  const scoringSummary = !isDraw ? renderResultScoring(game.result) : "";
+
+  return `
+    <div class="result-overlay">
+      <div class="result-overlay-backdrop"></div>
+      <div class="result-card">
+        <span class="result-eyebrow">${isDraw ? "對局結果" : "胡牌結果"}</span>
+        ${
+          isDraw
+            ? `<h3 class="result-title">流局</h3>`
+            : `
+              <div class="result-kind">${winKindLabel}</div>
+              <h3 class="result-title">${escapeHtml(winnerName)}</h3>
+            `
+        }
+        ${
+          winningTile
+            ? `
+              <div class="result-winning-tile">
+                ${winningTile}
+              </div>
+            `
+            : ""
+        }
+        ${fullHand}
+        ${scoringSummary}
+        <p class="result-patterns">${escapeHtml(detail)}</p>
+        <div class="result-actions result-actions-centered">
+          <button class="primary-button result-action-button" type="button" data-command="restartGame">繼續遊戲</button>
+          <button class="ghost-button result-action-button" type="button" data-ui-action="leave-room">離開遊戲</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function getResultPatternText(result) {
+  const patterns = Array.isArray(result && result.patterns) ? result.patterns.filter(Boolean) : [];
+  if (patterns.length) {
+    return patterns.join("、");
+  }
+
+  const taiBreakdown = Array.isArray(result && result.taiBreakdown)
+    ? result.taiBreakdown.filter((item) => item && item.tai > 0 && item.label)
+    : [];
+  if (taiBreakdown.length === 1 && taiBreakdown[0].key === "baseWin") {
+    return "基本胡";
+  }
+  if (taiBreakdown.length > 0) {
+    return "標準胡牌";
+  }
+
+  return "標準胡牌";
+}
+
+function renderResultHand(game) {
+  const result = game && game.result ? game.result : null;
+  if (!result || typeof result.winnerSeat !== "number") {
+    return "";
+  }
+
+  const winnerState =
+    game && Array.isArray(game.players)
+      ? game.players.find((player) => player && player.seat === result.winnerSeat) || game.players[result.winnerSeat]
+      : null;
+  if (!winnerState) {
+    return "";
+  }
+
+  const concealedTiles = Array.isArray(winnerState.hand) ? [...winnerState.hand] : [];
+  if (result.winningTileId && !concealedTiles.includes(result.winningTileId)) {
+    concealedTiles.push(result.winningTileId);
+  }
+
+  const sortedConcealedTiles = sortTileIds(concealedTiles);
+  const melds = Array.isArray(winnerState.melds) ? winnerState.melds : [];
+
+  return `
+    <div class="result-hand-panel">
+      <span class="result-hand-label">完整牌型</span>
+      <div class="result-hand-groups">
+        ${melds.map((meld) => renderResultHandGroup(getMeldLabel(meld.type), meld.tiles)).join("")}
+        ${renderResultHandGroup(melds.length ? "手牌" : "完整牌型", sortedConcealedTiles)}
+      </div>
+    </div>
+  `;
+}
+
+function renderResultScoring(result) {
+  if (!result || !result.scoringEnabled) {
+    return "";
+  }
+
+  const taiBreakdown = Array.isArray(result.taiBreakdown) ? result.taiBreakdown.filter((item) => item && item.tai > 0) : [];
+  return `
+    <div class="result-score-panel">
+      <span class="result-score-label">台數計算</span>
+      <ul class="result-score-breakdown">
+        ${
+          taiBreakdown.length
+            ? taiBreakdown
+                .map(
+                  (item) => `
+                    <li>
+                      <span>${escapeHtml(item.label)}</span>
+                      <strong>${item.tai}台</strong>
+                    </li>
+                  `,
+                )
+                .join("")
+            : `
+              <li>
+                <span>未達記分條件</span>
+                <strong>0台</strong>
+              </li>
+            `
+        }
+      </ul>
+      <div class="result-score-total">
+        <span>總共 ${Math.max(0, Number(result.totalTai) || 0)} 台</span>
+        <strong>總分 ${formatPointScore(Number(result.roundScore) || 0)}</strong>
+      </div>
+    </div>
+  `;
+}
+
+function isScoringEnabled(game) {
+  return Boolean(game && game.scoringEnabled);
+}
+
+function renderSeatLabel(game, seat) {
+  return `${formatSeat(seat)}${renderScoreBadge(game, seat)}`;
+}
+
+function renderScoreBadge(game, seat) {
+  if (typeof seat !== "number") {
+    return "";
+  }
+
+  const wins = getSeatWinCount(game, seat);
+  const scoringEnabled = isScoringEnabled(game);
+  if (!scoringEnabled && wins <= 0) {
+    return "";
+  }
+
+  const pointText = scoringEnabled ? ` (${formatPointScore(getSeatPointScore(game, seat))})` : "";
+  return `<span class="score-badge">+${wins}${pointText}</span>`;
+}
+
+function getSeatWinCount(game, seat) {
+  if (!game || typeof seat !== "number") {
+    return 0;
+  }
+
+  const winsSource = Array.isArray(game.wins) ? game.wins : Array.isArray(game.winCounts) ? game.winCounts : [];
+  const wins = Number(winsSource[seat]);
+  return Number.isFinite(wins) && wins > 0 ? Math.floor(wins) : 0;
+}
+
+function getSeatPointScore(game, seat) {
+  if (!game || !Array.isArray(game.scores) || typeof seat !== "number") {
+    return 0;
+  }
+
+  const score = Number(game.scores[seat]);
+  return Number.isFinite(score) ? Math.round(score) : 0;
+}
+
+function formatPointScore(score) {
+  return `${Math.round(Number(score) || 0)}`;
+}
+
 function updatePageMode() {
   document.body.classList.toggle("app-solo-mode", appState.selectedMode === GAME_MODE_SOLO);
   document.body.classList.toggle("app-game-focus", isGameFocused());
@@ -1463,6 +1812,35 @@ function stripUndefined(value) {
 
 function normalizeGameMode(value) {
   return value === GAME_MODE_SOLO ? GAME_MODE_SOLO : GAME_MODE_ONLINE;
+}
+
+function applyDefaultSettingsMigration() {
+  if (queryRoom) {
+    return;
+  }
+
+  const defaultsVersion = readLocalSetting(DEFAULTS_VERSION_STORAGE_KEY);
+  if (defaultsVersion === DEFAULTS_VERSION) {
+    return;
+  }
+
+  const storedMode = normalizeGameMode(readLocalSetting(GAME_MODE_STORAGE_KEY) || GAME_MODE_SOLO);
+  const storedDifficulty = normalizeSoloDifficulty(readLocalSetting(SOLO_DIFFICULTY_STORAGE_KEY));
+  const storedScoringEnabled = normalizeScoringEnabled(readLocalSetting(SCORING_ENABLED_STORAGE_KEY));
+
+  if (storedMode === GAME_MODE_ONLINE) {
+    writeLocalSetting(GAME_MODE_STORAGE_KEY, GAME_MODE_SOLO);
+  }
+
+  if (storedDifficulty === "easy") {
+    writeLocalSetting(SOLO_DIFFICULTY_STORAGE_KEY, DEFAULT_SOLO_DIFFICULTY);
+  }
+
+  if (!storedScoringEnabled) {
+    writeLocalSetting(SCORING_ENABLED_STORAGE_KEY, String(DEFAULT_SCORING_ENABLED));
+  }
+
+  writeLocalSetting(DEFAULTS_VERSION_STORAGE_KEY, DEFAULTS_VERSION);
 }
 
 function readLocalSetting(key) {

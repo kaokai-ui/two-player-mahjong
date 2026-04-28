@@ -21,7 +21,7 @@ import {
   createStartedGame,
   createWaitingGame,
   normalizeGameState,
-} from "./game.js?v=20260427g";
+} from "./game.js?v=20260428c";
 import { DEFAULT_RULESET } from "./rules.js?v=20260425i";
 import {
   firebaseAppCheckConfig,
@@ -146,6 +146,7 @@ export class NetworkController {
     playerName,
     rulesetId = DEFAULT_RULESET,
     drawRevealSeconds = DEFAULT_DRAW_REVEAL_SECONDS,
+    scoringEnabled = false,
   }) {
     try {
       await this.ensureReady();
@@ -222,7 +223,7 @@ export class NetworkController {
             joinedAt: now,
           },
         },
-        game: createWaitingGame(rulesetId, { drawRevealSeconds }),
+        game: createWaitingGame(rulesetId, { drawRevealSeconds, scoringEnabled }),
         commands: {},
       };
 

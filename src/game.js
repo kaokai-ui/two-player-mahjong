@@ -12,6 +12,12 @@ import {
   getTilesByType,
   sortTileIds,
 } from "./rules.js?v=20260425i";
+import {
+  DEFAULT_SCORING_ENABLED,
+  SCORING_VERSION,
+  evaluateWinningScore,
+  normalizeScoringEnabled,
+} from "./scoring.js?v=20260428c";
 
 export const DEFAULT_DRAW_REVEAL_SECONDS = 3;
 const MIN_DRAW_REVEAL_SECONDS = 0;
@@ -53,13 +59,18 @@ export function normalizeGameState(game) {
     ...game,
     players: normalizedPlayers,
     drawRevealSeconds: normalizeDrawRevealSeconds(game.drawRevealSeconds),
+    scoringEnabled: normalizeScoringEnabled(game.scoringEnabled),
+    scoringVersion: normalizeScoringEnabled(game.scoringEnabled)
+      ? game.scoringVersion || SCORING_VERSION
+      : "",
     actionLog: Array.isArray(game.actionLog) ? game.actionLog : [],
     wall: Array.isArray(game.wall) ? game.wall : [],
     pendingClaim: game.pendingClaim || null,
     latestDiscard: game.latestDiscard || null,
     result: game.result || null,
     lastDraw: game.lastDraw || null,
-    scores: normalizeScores(game.scores),
+    wins: normalizeWins(game.winCounts, game.scores, game.scoringEnabled),
+    scores: normalizePointScores(game.scores, game.winCounts, game.scoringEnabled),
   };
 }
 
@@ -74,15 +85,19 @@ export function normalizeDrawRevealSeconds(value) {
 
 export function createWaitingGame(rulesetId, options = {}) {
   const ruleset = getRuleset(rulesetId);
+  const normalizedOptions = typeof options === "number" ? { drawRevealSeconds: options } : options || {};
   const drawRevealSeconds = normalizeDrawRevealSeconds(
-    typeof options === "number" ? options : options && options.drawRevealSeconds,
+    normalizedOptions.drawRevealSeconds,
   );
+  const scoringEnabled = normalizeScoringEnabled(normalizedOptions.scoringEnabled);
   return {
     status: "waiting",
     phase: "waiting",
     rulesetId: ruleset.id,
     rulesetName: ruleset.name,
     drawRevealSeconds,
+    scoringEnabled,
+    scoringVersion: scoringEnabled ? SCORING_VERSION : "",
     players: [createRoundPlayer(0), createRoundPlayer(1)],
     actionLog: [`已建立房間，規則為「${ruleset.name}」。`],
     latestDiscard: null,
@@ -96,6 +111,7 @@ export function createWaitingGame(rulesetId, options = {}) {
     winnerSeat: null,
     result: null,
     lastDraw: null,
+    winCounts: [0, 0],
     scores: [0, 0],
   };
 }
@@ -109,6 +125,11 @@ export function createStartedGame(rulesetId, previousGame, options = {}) {
       ? options.drawRevealSeconds
       : previousGame && previousGame.drawRevealSeconds,
   );
+  const scoringEnabled = normalizeScoringEnabled(
+    options && Object.prototype.hasOwnProperty.call(options, "scoringEnabled")
+      ? options.scoringEnabled
+      : previousGame && previousGame.scoringEnabled,
+  );
 
   for (let drawCount = 0; drawCount < 13; drawCount += 1) {
     players[0].hand.push(deck.shift());
@@ -121,7 +142,16 @@ export function createStartedGame(rulesetId, previousGame, options = {}) {
   const dealerSeat = resolveNextDealerSeat(previousGame);
   const dealerDraw = deck.shift();
   players[dealerSeat].hand = sortTileIds([...players[dealerSeat].hand, dealerDraw]);
-  const scores = normalizeScores(previousGame && previousGame.scores);
+  const wins = normalizeWins(
+    previousGame && previousGame.winCounts,
+    previousGame && previousGame.scores,
+    previousGame && previousGame.scoringEnabled,
+  );
+  const scores = normalizePointScores(
+    previousGame && previousGame.scores,
+    previousGame && previousGame.winCounts,
+    previousGame && previousGame.scoringEnabled,
+  );
 
   return {
     status: "playing",
@@ -129,6 +159,8 @@ export function createStartedGame(rulesetId, previousGame, options = {}) {
     rulesetId: ruleset.id,
     rulesetName: ruleset.name,
     drawRevealSeconds,
+    scoringEnabled,
+    scoringVersion: scoringEnabled ? SCORING_VERSION : "",
     players,
     actionLog: [`新的一局開始，${seatLabel(dealerSeat)}為莊家。`],
     latestDiscard: null,
@@ -141,6 +173,7 @@ export function createStartedGame(rulesetId, previousGame, options = {}) {
     nextMeldId: 1,
     winnerSeat: null,
     result: null,
+    winCounts: wins,
     scores,
     lastDraw: {
       seat: dealerSeat,
@@ -729,7 +762,7 @@ function finalizeAddedKong(game, playerSeat, meldId, tileId) {
   drawSupplementTile(game, playerSeat, "補槓補牌");
 }
 
-function finishWithWinner(game, { winnerSeat, loserSeat, winKind, winningTileId, patterns }) {
+function finishWithWinnerLegacy(game, { winnerSeat, loserSeat, winKind, winningTileId, patterns }) {
   game.status = "finished";
   game.phase = "finished";
   game.winnerSeat = winnerSeat;
@@ -753,10 +786,107 @@ function finishWithWinner(game, { winnerSeat, loserSeat, winKind, winningTileId,
   appendLog(game, `${summaryLabel}，牌型：${patterns.join("、") || "一般胡牌"}。`);
 }
 
-function normalizeScores(scores) {
+function normalizeScoresLegacy(scores) {
   return Array.from({ length: 2 }, (_, seat) => {
     const value = Array.isArray(scores) ? Number(scores[seat]) : 0;
     return Number.isFinite(value) && value > 0 ? value : 0;
+  });
+}
+
+function finishAsDrawLegacy(game, message) {
+  game.status = "finished";
+  game.phase = "finished";
+  game.pendingClaim = null;
+  game.result = {
+    winKind: "draw",
+    patterns: [],
+    message,
+  };
+  appendLog(game, message);
+}
+
+function finishWithWinner(game, { winnerSeat, loserSeat, winKind, winningTileId, patterns }) {
+  const winner = getPlayer(game, winnerSeat);
+  const scoringEnabled = normalizeScoringEnabled(game.scoringEnabled);
+  const scoringSummary =
+    scoringEnabled && winner
+      ? evaluateWinningScore({
+          handTileIds: winner.hand,
+          melds: winner.melds,
+          winKind,
+          winningTileId,
+          additionalTileId: winKind === "discardWin" ? winningTileId : "",
+          additionalTileType: winKind === "robKong" ? getTileType(winningTileId) : "",
+          lastDrawSource: game.lastDraw ? game.lastDraw.source : "",
+        })
+      : null;
+
+  game.status = "finished";
+  game.phase = "finished";
+  game.winnerSeat = winnerSeat;
+  game.pendingClaim = null;
+  game.turnSeat = winnerSeat;
+  game.winCounts = normalizeWins(game.winCounts, game.scores, game.scoringEnabled);
+  game.winCounts[winnerSeat] += 1;
+  game.scores = normalizePointScores(game.scores, game.winCounts, game.scoringEnabled);
+
+  const scoreDeltaBySeat = [0, 0];
+  if (scoringEnabled && scoringSummary && scoringSummary.totalScore > 0) {
+    scoreDeltaBySeat[winnerSeat] += scoringSummary.totalScore;
+    if (typeof loserSeat === "number") {
+      scoreDeltaBySeat[loserSeat] -= scoringSummary.totalScore;
+    }
+    game.scores = game.scores.map((score, seat) => score + scoreDeltaBySeat[seat]);
+  }
+
+  game.result = {
+    winnerSeat,
+    loserSeat,
+    winKind,
+    winningTileId,
+    patterns,
+    scoringEnabled,
+    scoringVersion: scoringEnabled ? SCORING_VERSION : "",
+    taiBreakdown: scoringSummary ? scoringSummary.breakdown : [],
+    totalTai: scoringSummary ? scoringSummary.totalTai : 0,
+    roundScore: scoringSummary ? scoringSummary.totalScore : 0,
+    scoreDeltaBySeat,
+  };
+
+  const summaryLabel =
+    winKind === "selfDraw"
+      ? `${seatLabel(winnerSeat)}自摸`
+      : winKind === "robKong"
+        ? `${seatLabel(winnerSeat)}搶槓胡`
+        : `${seatLabel(winnerSeat)}胡牌`;
+  const summaryPatterns = patterns.join("、") || "標準胡牌";
+  const scoringText =
+    scoringEnabled && scoringSummary ? ` / ${scoringSummary.totalTai}台 / ${scoringSummary.totalScore}分` : "";
+  appendLog(game, `${summaryLabel}，牌型：${summaryPatterns}${scoringText}。`);
+}
+
+function normalizeWins(winCounts, legacyScores, scoringEnabled) {
+  const source = Array.isArray(winCounts)
+    ? winCounts
+    : !normalizeScoringEnabled(scoringEnabled) && Array.isArray(legacyScores)
+      ? legacyScores
+      : [];
+
+  return Array.from({ length: 2 }, (_, seat) => {
+    const value = Number(source[seat]);
+    return Number.isFinite(value) && value > 0 ? value : 0;
+  });
+}
+
+function normalizePointScores(scores, winCounts, scoringEnabled) {
+  const shouldTreatLegacyScoresAsWins = !Array.isArray(winCounts) && !normalizeScoringEnabled(scoringEnabled);
+  if (shouldTreatLegacyScoresAsWins) {
+    return [0, 0];
+  }
+
+  return Array.from({ length: 2 }, (_, seat) => {
+    const value = Array.isArray(scores) ? Number(scores[seat]) : 0;
+    return Number.isFinite(value) ? Math.round(value) : 0;
   });
 }
 
@@ -768,6 +898,12 @@ function finishAsDraw(game, message) {
     winKind: "draw",
     patterns: [],
     message,
+    scoringEnabled: normalizeScoringEnabled(game.scoringEnabled),
+    scoringVersion: normalizeScoringEnabled(game.scoringEnabled) ? SCORING_VERSION : "",
+    taiBreakdown: [],
+    totalTai: 0,
+    roundScore: 0,
+    scoreDeltaBySeat: [0, 0],
   };
   appendLog(game, message);
 }

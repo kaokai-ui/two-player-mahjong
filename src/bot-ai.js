@@ -1,4 +1,4 @@
-import { getPlayerClientState } from "./game.js?v=20260427g";
+import { getPlayerClientState } from "./game.js?v=20260428c";
 import {
   countTileTypes,
   getRuleset,
@@ -10,8 +10,9 @@ import {
   isHonorTile,
   isSuitTile,
 } from "./rules.js?v=20260425i";
+import { estimateScoringPotential, normalizeScoringEnabled, scoreFromTai } from "./scoring.js?v=20260428c";
 
-export const DEFAULT_SOLO_DIFFICULTY = "easy";
+export const DEFAULT_SOLO_DIFFICULTY = "hard";
 export const SOLO_DIFFICULTY_LABELS = {
   easy: "簡單",
   normal: "普通",
@@ -71,15 +72,18 @@ const DIFFICULTY_PROFILES = {
     structured: false,
     advanced: true,
     lookahead: false,
-    actionThreshold: 14,
-    attackFactor: 1,
-    riskMultiplier: 1,
+    actionThreshold: 10,
+    attackFactor: 1.05,
+    riskMultiplier: 0.92,
     lookaheadWeight: 0,
     lookaheadCandidateLimit: 0,
     lookaheadDrawLimit: 0,
     lookaheadActivationGap: 0,
     lookaheadMaxShanten: 0,
     guaranteedLookaheadShanten: 0,
+    scoringWeight: 0.48,
+    scoreGapWeight: 0.12,
+    exposurePenaltyScale: 20,
   },
   god: {
     id: "god",
@@ -87,14 +91,17 @@ const DIFFICULTY_PROFILES = {
     advanced: true,
     lookahead: true,
     actionThreshold: 6,
-    attackFactor: 1.1,
-    riskMultiplier: 0.74,
-    lookaheadWeight: 1.75,
-    lookaheadCandidateLimit: 2,
-    lookaheadDrawLimit: 3,
-    lookaheadActivationGap: 14,
-    lookaheadMaxShanten: 4,
-    guaranteedLookaheadShanten: 2,
+    attackFactor: 1.14,
+    riskMultiplier: 0.78,
+    lookaheadWeight: 1.55,
+    lookaheadCandidateLimit: 1,
+    lookaheadDrawLimit: 2,
+    lookaheadActivationGap: 8,
+    lookaheadMaxShanten: 3,
+    guaranteedLookaheadShanten: 1,
+    scoringWeight: 1.12,
+    scoreGapWeight: 0.28,
+    exposurePenaltyScale: 30,
   },
 };
 
@@ -156,6 +163,14 @@ export function decideBotAction(game, playerSeat, difficulty = DEFAULT_SOLO_DIFF
 
 function getDifficultyProfile(difficulty) {
   return DIFFICULTY_PROFILES[difficulty] || DIFFICULTY_PROFILES[DEFAULT_SOLO_DIFFICULTY];
+}
+
+function isScoringStrategyEnabled(game, profile) {
+  return Boolean(profile && profile.advanced && normalizeScoringEnabled(game && game.scoringEnabled));
+}
+
+function getScoringProfileId(profile) {
+  return profile && profile.id === "god" ? "god" : "hard";
 }
 
 function decideClaimAction(game, playerSeat, clientState, profile) {
@@ -352,7 +367,7 @@ function decideAdvancedClaimAction(game, playerSeat, clientState, options, pendi
 
   const analysisCache = createAnalysisCache();
   const lockedMelds = Array.isArray(player.melds) ? player.melds.length : 0;
-  const baseline = evaluateAdvancedHand(game, playerSeat, player.hand || [], lockedMelds, [], analysisCache);
+  const baseline = evaluateAdvancedHand(game, playerSeat, player.hand || [], lockedMelds, [], analysisCache, profile);
   const battleProfile = deriveBattleProfile(game, playerSeat, baseline);
   const claimTileId = pendingClaim.tileId || pendingClaim.tileType || "";
   const claimTileType = getTileType(claimTileId);
@@ -543,7 +558,7 @@ function decideAdvancedKongAction(game, playerSeat, player, clientState, profile
   const handTileIds = player.hand || [];
   const lockedMelds = Array.isArray(player.melds) ? player.melds.length : 0;
   const analysisCache = createAnalysisCache();
-  const baseline = evaluateAdvancedHand(game, playerSeat, handTileIds, lockedMelds, [], analysisCache);
+  const baseline = evaluateAdvancedHand(game, playerSeat, handTileIds, lockedMelds, [], analysisCache, profile);
   const battleProfile = deriveBattleProfile(game, playerSeat, baseline);
 
   for (const tileType of clientState.concealedKongs || []) {
@@ -704,7 +719,7 @@ function chooseAdvancedDiscardDecision(game, playerSeat, player, profile) {
   const counts = countTileTypes(tileIds);
   const lockedMelds = Array.isArray(player && player.melds) ? player.melds.length : 0;
   const analysisCache = createAnalysisCache();
-  const baseline = evaluateAdvancedHand(game, playerSeat, tileIds, lockedMelds, [], analysisCache);
+  const baseline = evaluateAdvancedHand(game, playerSeat, tileIds, lockedMelds, [], analysisCache, profile);
   const battleProfile = deriveBattleProfile(game, playerSeat, baseline);
 
   const candidates = evaluateDiscardCandidates({
@@ -746,6 +761,7 @@ function evaluateDiscardCandidates({
       lockedMelds,
       [getTileType(tileId)],
       analysisCache,
+      profile,
     );
     const discardRisk = evaluateDiscardRisk(game, playerSeat, tileId, battleProfile, analysisCache);
     const discardBias = scoreDiscardTile(tileId, counts);
@@ -846,8 +862,9 @@ function createAdvancedActionCandidate({
     lockedMeldsAfter,
     extraVisibleTileTypes,
     analysisCache,
+    profile,
   );
-  const lookaheadBonus = profile.lookahead && baseline.shanten <= 2
+  const lookaheadBonus = profile.lookahead && shouldRunActionLookahead(baseline, progress, profile)
     ? evaluateLookaheadPotential({
         game,
         playerSeat,
@@ -891,6 +908,15 @@ function createAdvancedActionCandidate({
   };
 }
 
+function shouldRunActionLookahead(baseline, progress, profile) {
+  const guaranteedShanten = profile.guaranteedLookaheadShanten || 0;
+  if (progress.shanten <= guaranteedShanten) {
+    return true;
+  }
+
+  return baseline.shanten <= 1 && progress.shanten <= baseline.shanten;
+}
+
 function pickBestActionCandidate(candidates) {
   return candidates.reduce((best, candidate) => {
     if (!candidate) {
@@ -930,6 +956,9 @@ function shouldTakeStructuredAction(baseline, progress, actionValue) {
 function shouldTakeAdvancedAction(baseline, candidate, battleProfile, profile) {
   const progress = candidate.progress;
   const threshold = profile.actionThreshold + battleProfile.defenseWeight * 2;
+  const scoringMode = Boolean(baseline.scoringPotential || progress.scoringPotential);
+  const baselineProjectedTai = baseline.scoringPotential ? baseline.scoringPotential.projectedTai : 0;
+  const progressProjectedTai = progress.scoringPotential ? progress.scoringPotential.projectedTai : 0;
 
   if (progress.shanten < baseline.shanten) {
     return true;
@@ -937,6 +966,17 @@ function shouldTakeAdvancedAction(baseline, candidate, battleProfile, profile) {
 
   if (progress.shanten > baseline.shanten && candidate.lookaheadBonus < 24) {
     return false;
+  }
+
+  if (scoringMode && progress.shanten === baseline.shanten) {
+    const taiLossTolerance = profile.id === "god" ? 0.45 : 0.9;
+    const openTaiLossTolerance = profile.id === "god" ? 0.25 : 0.6;
+    if (progressProjectedTai + taiLossTolerance < baselineProjectedTai && candidate.lookaheadBonus < 18) {
+      return false;
+    }
+    if (candidate.exposureDelta > 0 && progressProjectedTai + openTaiLossTolerance < baselineProjectedTai && candidate.lookaheadBonus < 24) {
+      return false;
+    }
   }
 
   if (progress.effectiveTileCount >= baseline.effectiveTileCount + 3) {
@@ -968,14 +1008,29 @@ function evaluateActionEV({
   const attackFactor = profile.attackFactor || 1;
   const riskMultiplier = profile.riskMultiplier || 1;
   const lookaheadWeight = profile.lookaheadWeight || 0;
+  const scoreGapWeight = profile.scoreGapWeight || 0;
   const progressDelta = progress.totalScore - baseline.totalScore;
+  const scoringDelta = (progress.scoringScore || 0) - (baseline.scoringScore || 0);
+  const baselineProjectedTai = baseline.scoringPotential ? baseline.scoringPotential.projectedTai : 0;
+  const progressProjectedTai = progress.scoringPotential ? progress.scoringPotential.projectedTai : 0;
+  const taiDelta = progressProjectedTai - baselineProjectedTai;
+  const baselineProjectedScore = baseline.scoringPotential ? scoreFromTai(baseline.scoringPotential.roundedProjectedTai) : 0;
+  const progressProjectedScore = progress.scoringPotential ? scoreFromTai(progress.scoringPotential.roundedProjectedTai) : 0;
+  const projectedScoreDelta = progressProjectedScore - baselineProjectedScore;
+  const scoringMode = Boolean(baseline.scoringPotential || progress.scoringPotential);
+  const exposurePenaltyScale = scoringMode
+    ? profile.exposurePenaltyScale || 24
+    : 18;
 
   return (
     progressDelta * attackFactor +
+    scoringDelta * scoreGapWeight * battleProfile.attackWeight +
+    taiDelta * (scoringMode ? 22 : 0) * battleProfile.attackWeight +
+    projectedScoreDelta * (scoringMode ? 0.22 : 0) * battleProfile.attackWeight +
     actionBonus +
     discardBias * 2 -
     discardRisk * battleProfile.defenseWeight * riskMultiplier -
-    exposureDelta * 18 * battleProfile.defenseWeight * riskMultiplier +
+    exposureDelta * exposurePenaltyScale * battleProfile.defenseWeight * riskMultiplier +
     lookaheadBonus * lookaheadWeight
   );
 }
@@ -1028,8 +1083,16 @@ function shouldDeclareOwnKong(tileType, handTileIds, difficulty) {
   return rank === 1 || rank === 9;
 }
 
-function evaluateAdvancedHand(game, playerSeat, handTileIds, lockedMelds = 0, extraVisibleTileTypes = [], analysisCache = createAnalysisCache()) {
-  const cacheKey = createAdvancedHandCacheKey(game, playerSeat, handTileIds, lockedMelds, extraVisibleTileTypes);
+function evaluateAdvancedHand(
+  game,
+  playerSeat,
+  handTileIds,
+  lockedMelds = 0,
+  extraVisibleTileTypes = [],
+  analysisCache = createAnalysisCache(),
+  profile = DIFFICULTY_PROFILES.hard,
+) {
+  const cacheKey = createAdvancedHandCacheKey(game, playerSeat, handTileIds, lockedMelds, extraVisibleTileTypes, profile);
   if (analysisCache.advancedCache.has(cacheKey)) {
     return analysisCache.advancedCache.get(cacheKey);
   }
@@ -1047,7 +1110,18 @@ function evaluateAdvancedHand(game, playerSeat, handTileIds, lockedMelds = 0, ex
   const shapeScore = evaluateShape(base);
   const availabilityScore = evaluateAvailability(future, base);
   const flexibilityScore = evaluateFlexibility(handTileIds);
-  const totalScore = shapeScore + availabilityScore + flexibilityScore;
+  const scoringPotential = isScoringStrategyEnabled(game, profile)
+    ? getCachedScoringPotential({
+        game,
+        playerSeat,
+        handTileIds,
+        extraVisibleTileTypes,
+        analysisCache,
+        profile,
+      })
+    : null;
+  const scoringScore = scoringPotential ? scoringPotential.evScore * (profile.scoringWeight || 0.5) : 0;
+  const totalScore = shapeScore + availabilityScore + flexibilityScore + scoringScore;
 
   const result = {
     ...base,
@@ -1055,11 +1129,46 @@ function evaluateAdvancedHand(game, playerSeat, handTileIds, lockedMelds = 0, ex
     shapeScore,
     availabilityScore,
     flexibilityScore,
+    scoringPotential,
+    scoringScore,
     totalScore,
   };
 
   analysisCache.advancedCache.set(cacheKey, result);
   return result;
+}
+
+function getCachedScoringPotential({
+  game,
+  playerSeat,
+  handTileIds,
+  extraVisibleTileTypes,
+  analysisCache,
+  profile,
+}) {
+  const counts = countTileTypes(handTileIds || []);
+  const countKey = ALL_TILE_TYPES.map((tileType) => counts[tileType] || 0).join(",");
+  const extraKey = [...(extraVisibleTileTypes || [])].map(getTileType).sort().join(",");
+  const scoringProfileId = getScoringProfileId(profile);
+  const visibleCounts = buildVisibleCounts(game, playerSeat, handTileIds, extraVisibleTileTypes, analysisCache);
+  const visibleKey = ALL_TILE_TYPES.map((tileType) => visibleCounts[tileType] || 0).join(",");
+  const meldKey = getPlayerMelds(game, playerSeat)
+    .map((meld) => `${meld.type}:${meld.tileType || ""}:${meld.concealed ? 1 : 0}`)
+    .join("|");
+  const cacheKey = `${playerSeat}|${countKey}|${extraKey}|${visibleKey}|${meldKey}|${scoringProfileId}`;
+
+  if (analysisCache.scoringCache.has(cacheKey)) {
+    return analysisCache.scoringCache.get(cacheKey);
+  }
+
+  const scoringPotential = estimateScoringPotential({
+    handTileIds,
+    melds: getPlayerMelds(game, playerSeat),
+    visibleCounts,
+    profile: scoringProfileId,
+  });
+  analysisCache.scoringCache.set(cacheKey, scoringPotential);
+  return scoringPotential;
 }
 
 function evaluateShape(progress) {
@@ -1140,6 +1249,26 @@ function deriveBattleProfile(game, playerSeat, baseProgress) {
     defenseWeight += 0.08;
   }
 
+  if (normalizeScoringEnabled(game && game.scoringEnabled) && Array.isArray(game && game.scores)) {
+    const myScore = Number(game.scores[playerSeat]) || 0;
+    const opponentScore = Number(game.scores[opponentSeat]) || 0;
+    const scoreGap = myScore - opponentScore;
+
+    if (scoreGap <= -160) {
+      attackWeight += 0.2;
+      defenseWeight -= 0.08;
+    } else if (scoreGap <= -80) {
+      attackWeight += 0.12;
+      defenseWeight -= 0.04;
+    } else if (scoreGap >= 160) {
+      attackWeight -= 0.08;
+      defenseWeight += 0.18;
+    } else if (scoreGap >= 80) {
+      attackWeight -= 0.04;
+      defenseWeight += 0.1;
+    }
+  }
+
   const suitPressure = evaluateSuitPressure(opponent);
   return {
     attackWeight,
@@ -1179,7 +1308,7 @@ function evaluateDiscardRisk(game, playerSeat, tileId, battleProfile, analysisCa
 
   const opponentSeat = getOpponentSeat(playerSeat);
   const opponent = game && Array.isArray(game.players) ? game.players[opponentSeat] : null;
-  const visibleCounts = buildVisibleCounts(game, playerSeat, [], []);
+  const visibleCounts = buildVisibleCounts(game, playerSeat, [], [], analysisCache);
   const visibleCount = visibleCounts[tileType] || 0;
   const opponentDiscardTypes = new Set(
     (opponent && Array.isArray(opponent.discards) ? opponent.discards : []).map((discard) => getTileType(discard.tileId || discard)),
@@ -1230,23 +1359,56 @@ function serializeSuitPressure(suitPressure) {
 }
 
 function evaluateLookaheadPotential({ game, playerSeat, handTileIds, lockedMelds, battleProfile, analysisCache, profile }) {
-  const availability = buildAvailabilityMap(game, playerSeat, handTileIds, []);
-  const baseline = evaluateHandProgress(handTileIds, lockedMelds, analysisCache.progressCache);
+  const cacheKey = createLookaheadCacheKey(game, playerSeat, handTileIds, lockedMelds, profile);
+  if (analysisCache.lookaheadCache.has(cacheKey)) {
+    return analysisCache.lookaheadCache.get(cacheKey);
+  }
+
+  const availability = buildAvailabilityMap(game, playerSeat, handTileIds, [], analysisCache);
+  const useScoringStrategy = isScoringStrategyEnabled(game, profile);
+  const baseline = useScoringStrategy
+    ? evaluateAdvancedHand(game, playerSeat, handTileIds, lockedMelds, [], analysisCache, profile)
+    : evaluateHandProgress(handTileIds, lockedMelds, analysisCache.progressCache);
   const drawLimit = profile.lookaheadDrawLimit || DEFAULT_LOOKAHEAD_DRAW_LIMIT;
 
-  const drawCandidates = Object.entries(availability)
+  const baselineScore = baseline.totalScore || baseline.score;
+  const screenedDraws = Object.entries(availability)
     .filter(([, count]) => count > 0)
     .map(([tileType, count]) => {
+      const quickProgress = evaluateHandProgress([...handTileIds, tileType], lockedMelds, analysisCache.progressCache);
+      const quickGain = (baseline.shanten - quickProgress.shanten) * 220 + (quickProgress.score - (baseline.score || 0));
+      return {
+        tileType,
+        count,
+        quickGain,
+        quickScore: quickGain + count * 4,
+      };
+    })
+    .sort((left, right) => {
+      if (right.quickScore !== left.quickScore) {
+        return right.quickScore - left.quickScore;
+      }
+      return right.count - left.count;
+    })
+    .slice(0, Math.max(drawLimit * 2 + 1, 5));
+
+  const drawCandidates = screenedDraws
+    .map(({ tileType, count }) => {
       const drawnTileId = `${tileType}-future`;
       const drawnHand = [...handTileIds, drawnTileId];
-      const drawProgress = evaluateHandProgress(drawnHand, lockedMelds, analysisCache.progressCache);
+      const drawProgress = useScoringStrategy
+        ? evaluateAdvancedHand(game, playerSeat, drawnHand, lockedMelds, [], analysisCache, profile)
+        : evaluateHandProgress(drawnHand, lockedMelds, analysisCache.progressCache);
       const followUp = chooseBestLookaheadDiscard({
+        game,
+        playerSeat,
         tileIds: drawnHand,
         lockedMelds,
         analysisCache,
+        profile,
       });
-      const immediateGain = (baseline.shanten - drawProgress.shanten) * 180 + (drawProgress.score - baseline.score);
-      const followUpGain = followUp.totalScore - baseline.score;
+      const immediateGain = (baseline.shanten - drawProgress.shanten) * 180 + ((drawProgress.totalScore || drawProgress.score) - baselineScore);
+      const followUpGain = followUp.totalScore - baselineScore;
 
       return {
         tileType,
@@ -1264,6 +1426,7 @@ function evaluateLookaheadPotential({ game, playerSeat, handTileIds, lockedMelds
 
   const totalWeight = drawCandidates.reduce((sum, candidate) => sum + candidate.count, 0);
   if (!totalWeight) {
+    analysisCache.lookaheadCache.set(cacheKey, 0);
     return 0;
   }
 
@@ -1271,7 +1434,9 @@ function evaluateLookaheadPotential({ game, playerSeat, handTileIds, lockedMelds
     (sum, candidate) => sum + candidate.followUpValue * candidate.count,
     0,
   );
-  return Math.max(0, weightedValue / totalWeight);
+  const lookaheadValue = Math.max(0, weightedValue / totalWeight);
+  analysisCache.lookaheadCache.set(cacheKey, lookaheadValue);
+  return lookaheadValue;
 }
 
 function shouldRunLookahead(baseline, candidates, profile) {
@@ -1294,13 +1459,38 @@ function shouldRunLookahead(baseline, candidates, profile) {
   return baseline.shanten <= maxShanten && Math.abs(candidates[0].totalScore - candidates[1].totalScore) <= activationGap;
 }
 
-function chooseBestLookaheadDiscard({ tileIds, lockedMelds, analysisCache }) {
+function chooseBestLookaheadDiscard({ game, playerSeat, tileIds, lockedMelds, analysisCache, profile }) {
   const counts = countTileTypes(tileIds);
-  const candidates = getCandidateDiscardTileIds(tileIds).map((tileId) => {
+  const useScoringStrategy = isScoringStrategyEnabled(game, profile);
+  const allCandidateTileIds = getCandidateDiscardTileIds(tileIds);
+  const shortlistTileIds = useScoringStrategy
+    ? allCandidateTileIds
+        .map((tileId) => {
+          const remainingHand = removeTileIdsFromHand(tileIds, [tileId]);
+          const quickProgress = evaluateHandProgress(remainingHand, lockedMelds, analysisCache.progressCache);
+          const discardBias = scoreDiscardTile(tileId, counts);
+          return {
+            tileId,
+            quickProgress,
+            quickScore: quickProgress.score + discardBias * 2 - quickProgress.shanten * 40,
+          };
+        })
+        .sort((left, right) => {
+          if (left.quickProgress.shanten !== right.quickProgress.shanten) {
+            return left.quickProgress.shanten - right.quickProgress.shanten;
+          }
+          return right.quickScore - left.quickScore;
+        })
+        .slice(0, 5)
+        .map((candidate) => candidate.tileId)
+    : allCandidateTileIds;
+  const candidates = shortlistTileIds.map((tileId) => {
     const remainingHand = removeTileIdsFromHand(tileIds, [tileId]);
-    const progress = evaluateHandProgress(remainingHand, lockedMelds, analysisCache.progressCache);
+    const progress = useScoringStrategy
+      ? evaluateAdvancedHand(game, playerSeat, remainingHand, lockedMelds, [getTileType(tileId)], analysisCache, profile)
+      : evaluateHandProgress(remainingHand, lockedMelds, analysisCache.progressCache);
     const discardBias = scoreDiscardTile(tileId, counts);
-    const totalScore = progress.score + discardBias * 2;
+    const totalScore = (progress.totalScore || progress.score) + discardBias * 2;
 
     return {
       tileId,
@@ -1309,7 +1499,15 @@ function chooseBestLookaheadDiscard({ tileIds, lockedMelds, analysisCache }) {
     };
   });
 
-  sortDiscardCandidates(candidates);
+  candidates.sort((left, right) => {
+    if (left.progress.shanten !== right.progress.shanten) {
+      return left.progress.shanten - right.progress.shanten;
+    }
+    if (right.totalScore !== left.totalScore) {
+      return right.totalScore - left.totalScore;
+    }
+    return left.tileId.localeCompare(right.tileId);
+  });
   return candidates[0];
 }
 
@@ -1322,7 +1520,7 @@ function evaluateFutureDrawPotential(
   baseProgress,
   analysisCache,
 ) {
-  const availability = buildAvailabilityMap(game, playerSeat, handTileIds, extraVisibleTileTypes);
+  const availability = buildAvailabilityMap(game, playerSeat, handTileIds, extraVisibleTileTypes, analysisCache);
   const totalAvailable = Object.values(availability).reduce((sum, count) => sum + count, 0);
 
   if (!totalAvailable) {
@@ -1370,17 +1568,35 @@ function evaluateFutureDrawPotential(
   };
 }
 
-function buildAvailabilityMap(game, playerSeat, handTileIds, extraVisibleTileTypes = []) {
+function buildAvailabilityMap(game, playerSeat, handTileIds, extraVisibleTileTypes = [], analysisCache = null) {
   const ruleset = getRuleset((game && game.rulesetId) || undefined);
-  const visibleCounts = buildVisibleCounts(game, playerSeat, handTileIds, extraVisibleTileTypes);
+  const visibleCounts = buildVisibleCounts(game, playerSeat, handTileIds, extraVisibleTileTypes, analysisCache);
+  const visibleKey = ALL_TILE_TYPES.map((tileType) => visibleCounts[tileType] || 0).join(",");
+  const cacheKey = `${playerSeat}|${visibleKey}`;
+  if (analysisCache && analysisCache.availabilityCache.has(cacheKey)) {
+    return analysisCache.availabilityCache.get(cacheKey);
+  }
   const availability = {};
   for (const tileType of ruleset.tileTypes) {
     availability[tileType] = Math.max(0, 4 - (visibleCounts[tileType] || 0));
   }
+  if (analysisCache) {
+    analysisCache.availabilityCache.set(cacheKey, availability);
+  }
   return availability;
 }
 
-function buildVisibleCounts(game, playerSeat, handTileIds = [], extraVisibleTileTypes = []) {
+function buildVisibleCounts(game, playerSeat, handTileIds = [], extraVisibleTileTypes = [], analysisCache = null) {
+  const handCounts = countTileTypes(handTileIds || []);
+  const handKey = ALL_TILE_TYPES.map((tileType) => handCounts[tileType] || 0).join(",");
+  const extraKey = [...(extraVisibleTileTypes || [])].map(getTileType).sort().join(",");
+  const round = game && typeof game.roundNumber === "number" ? game.roundNumber : 0;
+  const latestDiscardId = game && game.latestDiscard ? game.latestDiscard.id : 0;
+  const cacheKey = `${round}|${latestDiscardId}|${playerSeat}|${handKey}|${extraKey}`;
+  if (analysisCache && analysisCache.visibleCountsCache.has(cacheKey)) {
+    return analysisCache.visibleCountsCache.get(cacheKey);
+  }
+
   const visibleCounts = {};
 
   for (const player of game && Array.isArray(game.players) ? game.players : []) {
@@ -1402,7 +1618,15 @@ function buildVisibleCounts(game, playerSeat, handTileIds = [], extraVisibleTile
     incrementTileTypeCount(visibleCounts, tileType);
   }
 
+  if (analysisCache) {
+    analysisCache.visibleCountsCache.set(cacheKey, visibleCounts);
+  }
   return visibleCounts;
+}
+
+function getPlayerMelds(game, playerSeat) {
+  const player = game && Array.isArray(game.players) ? game.players[playerSeat] : null;
+  return player && Array.isArray(player.melds) ? player.melds : [];
 }
 
 function incrementTileTypeCount(counts, tileType) {
@@ -1412,13 +1636,23 @@ function incrementTileTypeCount(counts, tileType) {
   counts[tileType] = (counts[tileType] || 0) + 1;
 }
 
-function createAdvancedHandCacheKey(game, playerSeat, handTileIds, lockedMelds, extraVisibleTileTypes) {
+function createAdvancedHandCacheKey(game, playerSeat, handTileIds, lockedMelds, extraVisibleTileTypes, profile) {
   const counts = countTileTypes(handTileIds || []);
   const countKey = ALL_TILE_TYPES.map((tileType) => counts[tileType] || 0).join(",");
   const extraKey = [...(extraVisibleTileTypes || [])].map(getTileType).sort().join(",");
   const round = game && typeof game.roundNumber === "number" ? game.roundNumber : 0;
   const latestDiscardId = game && game.latestDiscard ? game.latestDiscard.id : 0;
-  return `${round}|${latestDiscardId}|${playerSeat}|${lockedMelds}|${countKey}|${extraKey}`;
+  const scoringKey = isScoringStrategyEnabled(game, profile) ? getScoringProfileId(profile) : "plain";
+  return `${round}|${latestDiscardId}|${playerSeat}|${lockedMelds}|${countKey}|${extraKey}|${scoringKey}`;
+}
+
+function createLookaheadCacheKey(game, playerSeat, handTileIds, lockedMelds, profile) {
+  const counts = countTileTypes(handTileIds || []);
+  const countKey = ALL_TILE_TYPES.map((tileType) => counts[tileType] || 0).join(",");
+  const round = game && typeof game.roundNumber === "number" ? game.roundNumber : 0;
+  const latestDiscardId = game && game.latestDiscard ? game.latestDiscard.id : 0;
+  const scoringKey = isScoringStrategyEnabled(game, profile) ? getScoringProfileId(profile) : "plain";
+  return `${round}|${latestDiscardId}|${playerSeat}|${lockedMelds}|${countKey}|${scoringKey}`;
 }
 
 function buildDiscardDecisionSummary(profile, battleProfile, candidates) {
@@ -1848,6 +2082,10 @@ function createAnalysisCache() {
     progressCache: new Map(),
     advancedCache: new Map(),
     riskCache: new Map(),
+    visibleCountsCache: new Map(),
+    availabilityCache: new Map(),
+    scoringCache: new Map(),
+    lookaheadCache: new Map(),
   };
 }
 

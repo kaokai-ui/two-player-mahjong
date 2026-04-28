@@ -422,6 +422,7 @@ body.app-solo-mode #join-room-form {
   margin-left: 8px;
   color: #d72f2f;
   font-weight: 900;
+  white-space: nowrap;
 }
 
 .pill .score-badge {
@@ -875,14 +876,14 @@ body.app-game-focus .table-self .meld-strip .tile-faceup {
   border-radius: 22px;
   padding: 10px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
-  grid-template-columns: minmax(120px, 0.44fr) minmax(0, 1fr) minmax(180px, 0.75fr);
+  grid-template-columns: minmax(88px, 0.22fr) minmax(0, 1.08fr) minmax(220px, 0.74fr);
   align-items: stretch;
   height: 184px;
   overflow: hidden;
 }
 
 body.app-game-focus .table-center {
-  grid-template-columns: minmax(120px, 0.44fr) minmax(0, 1fr) minmax(180px, 0.75fr);
+  grid-template-columns: minmax(88px, 0.2fr) minmax(0, 1.12fr) minmax(220px, 0.72fr);
   grid-template-rows: 1fr;
   gap: 8px;
   align-items: stretch;
@@ -911,7 +912,7 @@ body.app-game-focus .table-center {
 }
 
 .center-block-actions .center-label {
-  font-size: 1.32rem;
+  font-size: 0.88rem;
 }
 
 .latest-discard {
@@ -940,20 +941,33 @@ body.app-game-focus .latest-discard .tile-faceup {
 }
 
 .center-block-actions .action-grid {
-  gap: 12px;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(23, 32, 29, 0.24) transparent;
 }
 
 .center-block-actions .action-button {
-  font-size: 1.5rem;
+  font-size: clamp(1.04rem, 1.42vw, 1.16rem);
   font-weight: 700;
-  padding: 15px 20px;
-  line-height: 1.3;
+  padding: 12px 14px;
+  line-height: 1.18;
+  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: max-content;
+  border-radius: 16px;
 }
 
 .center-block-actions .placeholder {
-  font-size: 1.5rem;
+  font-size: clamp(0.94rem, 1.2vw, 1.02rem);
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.3;
+  white-space: nowrap;
 }
 
 .action-emphasis {
@@ -1261,6 +1275,53 @@ body.app-game-focus .result-hand-tiles .tile-faceup {
   font-weight: 700;
 }
 
+.result-score-panel {
+  width: min(100%, 860px);
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(147, 126, 88, 0.16);
+}
+
+.result-score-label {
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.result-score-breakdown {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.result-score-breakdown li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.66);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.result-score-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink);
+  font-size: 1rem;
+  font-weight: 900;
+}
+
 @media (max-width: 1180px), (max-height: 920px) {
   .result-card {
     gap: 8px;
@@ -1333,6 +1394,30 @@ body.app-game-focus .result-hand-tiles .tile-faceup {
     line-height: 1.45;
   }
 
+  .result-score-panel {
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 18px;
+  }
+
+  .result-score-label {
+    font-size: 0.8rem;
+  }
+
+  .result-score-breakdown {
+    gap: 6px;
+  }
+
+  .result-score-breakdown li {
+    padding: 7px 9px;
+    border-radius: 12px;
+    font-size: 0.86rem;
+  }
+
+  .result-score-total {
+    font-size: 0.92rem;
+  }
+
   .result-actions {
     flex-wrap: nowrap;
     gap: 8px;
@@ -1358,11 +1443,24 @@ body.app-game-focus .result-hand-tiles .tile-faceup {
   }
 
   body.app-game-focus .table-center {
-    grid-template-columns: minmax(110px, 0.42fr) minmax(0, 1fr) minmax(170px, 0.72fr);
+    grid-template-columns: minmax(84px, 0.2fr) minmax(0, 1.14fr) minmax(200px, 0.66fr);
   }
 
   body.app-game-focus .table-side {
     max-height: none;
+  }
+
+  .center-block-actions .action-grid {
+    gap: 6px;
+  }
+
+  .center-block-actions .action-button {
+    font-size: clamp(0.98rem, 1.62vw, 1.08rem);
+    padding: 10px 12px;
+  }
+
+  .center-block-actions .placeholder {
+    font-size: 0.94rem;
   }
 }
 

@@ -13,7 +13,7 @@
       content="可部署到 GitHub Pages 的雙人 13 張麻將 Web UI，支援 iPad 連線對戰與 Firebase 房間同步。"
     />
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./styles.css?v=20260427k" />
+    <link rel="stylesheet" href="./styles.css?v=20260428c" />
     <script>
       (function () {
         var root =
@@ -83,7 +83,7 @@
             <span>遊戲模式</span>
             <select id="game-mode-select">
               <option value="online">雙人連線</option>
-              <option value="solo-bot">單人對電腦</option>
+              <option value="solo-bot" selected>單人對電腦</option>
             </select>
           </label>
           <div id="firebase-status"></div>
@@ -124,14 +124,13 @@
               <label id="create-solo-difficulty-field" class="field" hidden>
                 <span>電腦難度</span>
                 <select id="create-solo-difficulty-select">
-                  <option value="easy" selected>簡單</option>
+                  <option value="easy">簡單</option>
                   <option value="normal">普通</option>
-                  <option value="hard">困難</option>
+                  <option value="hard" selected>困難</option>
                   <option value="god">賭神</option>
                 </select>
               </label>
 
-              <button id="create-room-submit-button" class="primary-button" type="button" data-submit-action="create-room">建立房間</button>
               <label class="field">
                 <span>摸牌倒數</span>
                 <select id="create-draw-reveal-seconds-select">
@@ -144,6 +143,14 @@
                   <option value="6">6 秒</option>
                 </select>
               </label>
+              <label class="field">
+                <span>台數計算</span>
+                <select id="create-scoring-enabled-select">
+                  <option value="false">關閉</option>
+                  <option value="true" selected>開啟</option>
+                </select>
+              </label>
+              <button id="create-room-submit-button" class="primary-button" type="button" data-submit-action="create-room">建立房間</button>
               <div id="create-room-feedback" class="form-feedback" aria-live="polite"></div>
             </form>
 
@@ -216,7 +223,7 @@
       })();
     </script>
     <script type="module">
-      const version = "20260427l";
+      const version = "20260428c";
 
       function shouldLoadLocalOverride() {
         const { protocol, hostname } = window.location;
